@@ -27,6 +27,7 @@ final class QuotaPopoverViewController: NSViewController {
     private let summaryCard = NSView()
     private let headerActions = NSStackView()
     private let themeButton = HeaderIconButton(symbol: "moon")
+    private let checkinButton = HeaderIconButton(symbol: "checkmark.circle")
     private var summaryService = NSTextField(labelWithString: "—")
     private var summaryLowest = NSTextField(labelWithString: "—")
     private var summaryCheckin = NSTextField(labelWithString: "待签")
@@ -81,6 +82,11 @@ final class QuotaPopoverViewController: NSViewController {
         themeButton.action = #selector(themeTapped)
         themeButton.toolTip = "切换明暗"
 
+        checkinButton.target = self
+        checkinButton.action = #selector(checkinTapped)
+        checkinButton.toolTip = "一键签到 Trae + WorkBuddy"
+        checkinButton.setAccessibilityLabel("一键签到 Trae 和 WorkBuddy")
+
         let refresh = iconButton("arrow.clockwise", tooltip: "立即刷新", action: #selector(refreshTapped))
         let gear = iconButton("gearshape", tooltip: "设置", action: #selector(settingsTapped))
 
@@ -95,7 +101,7 @@ final class QuotaPopoverViewController: NSViewController {
         headerActions.layer?.borderWidth = 1
         headerActions.layer?.borderColor = Theme.separator.resolvedCGColor()
         headerActions.translatesAutoresizingMaskIntoConstraints = false
-        for button in [themeButton, refresh, gear] { headerActions.addArrangedSubview(button) }
+        for button in [checkinButton, themeButton, refresh, gear] { headerActions.addArrangedSubview(button) }
 
         let headerSpacer = NSView()
         headerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -262,11 +268,18 @@ final class QuotaPopoverViewController: NSViewController {
         checkinDone = done
         checkinDetailText = detail
         checkinRunning = running
+        // 两个都签完就自动隐藏；运行中保留但禁用，避免重复点击。
+        checkinButton.isHidden = done
+        checkinButton.isEnabled = !running
         summaryCheckin.stringValue = done ? "已签" : (running ? "签到中" : "待签")
         setThemedColor(summaryCheckin, done ? QuotaStyle.healthyColor : .labelColor)
         if let snapshot = lastSnapshot {
             update(snapshot: snapshot, error: lastError, isRefreshing: lastRefreshing)
         }
+    }
+
+    @objc private func checkinTapped() {
+        onCheckin?()
     }
 
     @objc private func themeTapped() {

@@ -110,6 +110,32 @@ function findStorage(edition) {
  * 读取并解密 Trae 登录态。
  * @returns {{token:string, refreshToken:string, expiredAt:string|null, userId:string, host:string, edition:string, storagePath:string}}
  */
+/**
+ * 读取客户端真实注册过的设备号。
+ * 9074 的根因是 x-device-id 必须来自 storage.json 的键名，
+ * 不能自己 hash 一个；这里只返回数字，不返回 token。
+ */
+function readTraeDeviceId(edition = 'cn') {
+  const storagePath = findStorage(edition);
+  if (!storagePath) return null;
+  let storage;
+  try {
+    storage = JSON.parse(fs.readFileSync(storagePath, 'utf8'));
+  } catch {
+    return null;
+  }
+  for (const key of Object.keys(storage)) {
+    const match = key.match(/iCubeAuthInfo:\/\/icube-dc:(\d{12,20})$/);
+    if (match) return match[1];
+    if (key === 'iCubeAuthInfo://icube-dc') {
+      const value = String(storage[key] || '');
+      const fallback = value.match(/\d{12,20}/);
+      if (fallback) return fallback[0];
+    }
+  }
+  return null;
+}
+
 function readTraeAuth(edition = 'cn') {
   const storagePath = findStorage(edition);
   if (!storagePath) {
@@ -130,7 +156,8 @@ function readTraeAuth(edition = 'cn') {
     host: data.host || 'https://api.trae.cn',
     edition,
     storagePath,
+    deviceId: readTraeDeviceId(edition),
   };
 }
 
-module.exports = { readTraeAuth, decryptStorageValue, DATA_DIRS };
+module.exports = { readTraeAuth, readTraeDeviceId, decryptStorageValue, DATA_DIRS };

@@ -886,10 +886,15 @@ function checkinTrae(cfg) {
   } catch (e) {
     return { provider: 'trae', status: 'failed', message: e.message || '未找到 Trae 登录态' };
   }
-  const deviceId = crypto
-    .createHash('sha256')
-    .update(`${os.hostname()}${os.userInfo().username}:agent-quota-checkin`)
-    .digest('hex');
+  // x-device-id 必须是客户端真实注册过的设备号；自己 hash 的号会稳定返回 9074。
+  const deviceId = auth.deviceId;
+  if (!deviceId) {
+    return {
+      provider: 'trae',
+      status: 'failed',
+      message: '未找到 Trae 设备号，请先打开 Trae 登录一次',
+    };
+  }
   const headers = {
     'Content-Type': 'application/json',
     Authorization: `Cloud-IDE-JWT ${auth.token}`,
@@ -918,7 +923,7 @@ function checkinTrae(cfg) {
   if (!status.json) {
     return { provider: 'trae', status: 'failed', message: `状态接口 HTTP ${status.status}` };
   }
-  if (status.json.checked_in === true) {
+  if (status.json.checked_in === true || status.json.did_checked_in === true) {
     return {
       provider: 'trae',
       status: 'already',
@@ -941,11 +946,10 @@ function checkinTrae(cfg) {
     return { provider: 'trae', status: 'already', message: '今日已签到' };
   }
   if (code !== 0) {
-    return {
-      provider: 'trae',
-      status: 'failed',
-      message: `领取失败 code=${code ?? claim.status}`,
-    };
+    const hint = code === 9074
+      ? '设备号未注册（9074），请先打开 Trae 登录一次后重试'
+      : `领取失败 code=${code ?? claim.status}`;
+    return { provider: 'trae', status: 'failed', message: hint };
   }
   const points = num(claim.json?.data?.points);
   return {
@@ -1078,7 +1082,7 @@ function runCheckin(only, options = {}) {
   }
 
   const results = [];
-  const map = { trae: checkinTrae, workbuddy: checkinWorkbuddy };
+  const map = { trae: checkinTrae, workbuddy: checkinWorkBuddy };
   for (const [id, fn] of Object.entries(map)) {
     if (only && !only.includes(id)) continue;
     try {

@@ -511,9 +511,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         refresh.target = self
         menu.addItem(refresh)
 
-        let checkinItem = NSMenuItem(title: "立即签到", action: #selector(checkinNowMenu), keyEquivalent: "")
-        checkinItem.target = self
-        menu.addItem(checkinItem)
+        if !checkin.hasCheckedInToday {
+            let checkinItem = NSMenuItem(
+                title: "一键签到 Trae + WorkBuddy",
+                action: #selector(checkinNowMenu),
+                keyEquivalent: ""
+            )
+            checkinItem.target = self
+            menu.addItem(checkinItem)
+        }
 
         menu.addItem(.separator())
 

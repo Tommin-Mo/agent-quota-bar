@@ -138,9 +138,9 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
 
 ## 每日签到
 
-Trae 与 WorkBuddy 每天自动签到，默认 09:00，失败每 30 分钟重试；签到入口就在各自的面板行里，菜单栏右键也有「立即签到」。
+Trae 与 WorkBuddy 每天自动签到，默认 09:00，失败每 30 分钟重试。面板右上角有一个**一键签到**按钮，同时签 Trae 和 WorkBuddy；两个都签完后按钮自动隐藏。菜单栏右键的「一键签到 Trae + WorkBuddy」也会在完成后隐藏。
 
-- Trae：`/trae/api/v2/ug/checkin_credits/status` + `/claim`
+- Trae：`/trae/api/v2/ug/checkin_credits/status` + `/claim`；`x-device-id` 从本机 `storage.json` 的 `iCubeAuthInfo://icube-dc:<deviceId>` 读取，不能用自造设备号（否则返回 9074）
 - WorkBuddy：`/v2/billing/meter/checkin-activity-status` + `/daily-checkin`
 - 签到结果写入 `checkin.lastDate / lastSummary / workbuddyStreak`，面板对应行显示「✓ 今日已签」
 

@@ -22,14 +22,19 @@ final class CheckinService {
     }
 
     var hasCheckedInToday: Bool {
-        config.string("checkin.lastDate") == Self.todayKey
+        guard config.string("checkin.lastDate") == Self.todayKey else { return false }
+        // 同一天可能先成功、后手动重试失败；失败摘要不能算“已完成”。
+        return !config.string("checkin.lastSummary").contains("失败")
     }
 
     var isRunning: Bool { running }
 
     var statusText: String {
         if running { return "签到中…" }
-        let summary = config.string("checkin.lastSummary")
+        let rawSummary = config.string("checkin.lastSummary")
+        let summary = rawSummary.contains("\n") || rawSummary.count > 180
+            ? "签到失败，请重试"
+            : rawSummary
         if hasCheckedInToday {
             return summary.isEmpty ? "今日已签到" : summary
         }
@@ -98,7 +103,12 @@ final class CheckinService {
                 }
                 completion?(report)
             case .failure(let error):
-                self.config.set("checkin.lastSummary", "签到失败：\(error.localizedDescription)")
+                let firstLine = error.localizedDescription
+                    .split(separator: "\n")
+                    .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                    .map(String.init) ?? "未知错误"
+                let message = String(firstLine.prefix(160))
+                self.config.set("checkin.lastSummary", "签到失败：\(message)")
                 try? self.config.save()
                 self.onUpdate?()
                 completion?(CheckinReport(results: []))

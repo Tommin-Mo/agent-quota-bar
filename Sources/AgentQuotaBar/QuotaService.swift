@@ -183,7 +183,11 @@ final class QuotaService {
         } catch {
             let stderr = String(data: errData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            throw QuotaError.failed(stderr.isEmpty ? "签到没有返回可解析的数据" : stderr)
+            let firstLine = stderr
+                .split(separator: "\n")
+                .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map(String.init) ?? ""
+            throw QuotaError.failed(firstLine.isEmpty ? "签到没有返回可解析的数据" : String(firstLine.prefix(200)))
         }
     }
 
