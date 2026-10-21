@@ -679,6 +679,26 @@ final class PillView: NSView {
 
 // MARK: - 文本辅助
 
+/// 跟随所在视图的实际外观重算颜色；避免窗口/视图从浅色切到深色后，
+/// NSTextField 仍缓存创建时的黑色。
+final class ThemedLabel: NSTextField {
+    var roleColor: NSColor = .labelColor
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        textColor = roleColor.resolvedForAppearance(NSApp.effectiveAppearance)
+        needsDisplay = true
+    }
+
+    func applyRole(_ color: NSColor) {
+        roleColor = color
+        // 用 App 级别的外观，而不是视图自己的 effectiveAppearance：
+        // 新建行尚未入窗口时，视图级外观可能还是浅色，会把文字固定成黑色。
+        textColor = color.resolvedForAppearance(NSApp.effectiveAppearance)
+        needsDisplay = true
+    }
+}
+
 func label(
     _ text: String,
     size: CGFloat,
@@ -686,10 +706,11 @@ func label(
     color: NSColor = .labelColor,
     monospaced: Bool = false
 ) -> NSTextField {
-    let label = NSTextField(labelWithString: text)
+    let label = ThemedLabel(labelWithString: text)
     label.font = monospaced
         ? .monospacedDigitSystemFont(ofSize: size, weight: weight)
         : .systemFont(ofSize: size, weight: weight)
+    label.roleColor = color
     label.textColor = color.resolvedForAppearance()
     label.lineBreakMode = .byTruncatingTail
     return label

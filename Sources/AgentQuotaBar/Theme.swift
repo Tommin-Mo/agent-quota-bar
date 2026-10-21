@@ -45,8 +45,13 @@ extension NSColor {
         return resolved
     }
 
-    /// 把动态色固定成当前外观下的具体颜色，避免 NSTextField 缓存了错误外观的颜色。
-    func resolvedForAppearance() -> NSColor {
-        NSColor(cgColor: resolvedCGColor()) ?? self
+    /// 把动态色固定成指定外观下的具体颜色，避免 NSTextField 缓存了错误外观的颜色。
+    func resolvedForAppearance(_ appearance: NSAppearance? = nil) -> NSColor {
+        let target = appearance ?? NSApp.effectiveAppearance
+        var color = cgColor
+        target.performAsCurrentDrawingAppearance {
+            color = cgColor
+        }
+        return NSColor(cgColor: color) ?? self
     }
 }

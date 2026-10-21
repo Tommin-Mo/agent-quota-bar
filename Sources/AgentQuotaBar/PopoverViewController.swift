@@ -178,6 +178,27 @@ final class QuotaPopoverViewController: NSViewController {
         refreshAppearance()
     }
 
+    private func applyAppearanceRecursively(to node: NSView) {
+        if let label = node as? ThemedLabel {
+            label.applyRole(label.roleColor)
+            label.needsDisplay = true
+        } else if let logo = node as? LogoBadgeView {
+            logo.refreshInk()
+            logo.needsDisplay = true
+        }
+        node.needsDisplay = true
+        node.layer?.setNeedsDisplay()
+        node.subviews.forEach { applyAppearanceRecursively(to: $0) }
+    }
+
+    private func setThemedColor(_ field: NSTextField, _ color: NSColor) {
+        if let themed = field as? ThemedLabel {
+            themed.applyRole(color)
+        } else {
+            field.textColor = color.resolvedForAppearance()
+        }
+    }
+
     private func summaryStat(_ title: String, value: NSTextField) -> NSView {
         let titleLabel = label(title, size: 10, weight: .medium, color: Theme.tertiary)
         titleLabel.alignment = .center
@@ -200,9 +221,11 @@ final class QuotaPopoverViewController: NSViewController {
     }
 
     func refreshAppearance() {
+        view.window?.appearance = NSApp.appearance
         if let snapshot = lastSnapshot {
             update(snapshot: snapshot, error: lastError, isRefreshing: lastRefreshing)
         }
+        applyAppearanceRecursively(to: view)
         root.layer?.backgroundColor = Theme.background.resolvedCGColor()
         summaryCard.layer?.backgroundColor = Theme.surfaceAlt.resolvedCGColor()
         summaryCard.layer?.borderColor = Theme.separator.resolvedCGColor()
@@ -221,7 +244,7 @@ final class QuotaPopoverViewController: NSViewController {
         checkinDetailText = detail
         checkinRunning = running
         summaryCheckin.stringValue = done ? "已签" : (running ? "签到中" : "待签")
-        summaryCheckin.textColor = done ? Theme.success : .labelColor
+        setThemedColor(summaryCheckin, done ? QuotaStyle.healthyColor : .labelColor)
         if let snapshot = lastSnapshot {
             update(snapshot: snapshot, error: lastError, isRefreshing: lastRefreshing)
         }
@@ -252,7 +275,7 @@ final class QuotaPopoverViewController: NSViewController {
             summaryService.stringValue = "—"
             summaryLowest.stringValue = "—"
             summaryCheckin.stringValue = checkinDone ? "已签" : "待签"
-            summaryCheckin.textColor = checkinDone ? QuotaStyle.healthyColor : .labelColor.resolvedForAppearance()
+            setThemedColor(summaryCheckin, checkinDone ? QuotaStyle.healthyColor : .labelColor)
             footerLabel.stringValue = isRefreshing ? "正在查询…" : "尚未刷新"
             updatePreferredSize()
             return
@@ -285,18 +308,19 @@ final class QuotaPopoverViewController: NSViewController {
             provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent
         }
         summaryService.stringValue = "\(snapshot.usableCount)/\(snapshot.enabledCount)"
-        summaryService.textColor = .labelColor.resolvedForAppearance()
+        setThemedColor(summaryService, .labelColor)
         if let lowest = percents.min() {
             summaryLowest.stringValue = "\(Int(lowest.rounded()))%"
-            summaryLowest.textColor = lowest <= 45
-                ? QuotaSeverity.from(remaining: lowest).color
-                : .labelColor.resolvedForAppearance()
+            setThemedColor(
+                summaryLowest,
+                lowest <= 45 ? QuotaSeverity.from(remaining: lowest).color : .labelColor
+            )
         } else {
             summaryLowest.stringValue = "—"
-            summaryLowest.textColor = .labelColor.resolvedForAppearance()
+            setThemedColor(summaryLowest, .labelColor)
         }
         summaryCheckin.stringValue = checkinDone ? "已签" : (checkinRunning ? "签到中" : "待签")
-        summaryCheckin.textColor = checkinDone ? Theme.success : Theme.text
+        setThemedColor(summaryCheckin, checkinDone ? QuotaStyle.healthyColor : .labelColor)
 
         if let error {
             footerLabel.stringValue = "⚠︎ " + error
@@ -790,6 +814,7 @@ final class HeaderIconButton: NSButton {
 
 final class LogoBadgeView: NSView {
     private let size: CGFloat
+    private let imageView = NSImageView()
 
     init(provider: String, color: NSColor, size: CGFloat) {
         self.size = size
@@ -798,7 +823,6 @@ final class LogoBadgeView: NSView {
         widthAnchor.constraint(equalToConstant: size).isActive = true
         heightAnchor.constraint(equalToConstant: size).isActive = true
 
-        let imageView = NSImageView()
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.imageScaling = .scaleProportionallyUpOrDown
         if let image = ProviderLogo.image(for: provider, size: size, color: .black) {
@@ -807,7 +831,6 @@ final class LogoBadgeView: NSView {
         } else {
             imageView.image = NSImage(systemSymbolName: "circle.dashed", accessibilityDescription: nil)
         }
-        imageView.contentTintColor = .labelColor.resolvedForAppearance()
         addSubview(imageView)
         NSLayoutConstraint.activate([
             imageView.topAnchor.constraint(equalTo: topAnchor),
@@ -815,9 +838,23 @@ final class LogoBadgeView: NSView {
             imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
             imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+        updateInk()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateInk()
+    }
+
+    func refreshInk() {
+        updateInk()
+    }
+
+    private func updateInk() {
+        imageView.contentTintColor = NSColor.labelColor.resolvedForAppearance(NSApp.effectiveAppearance)
     }
 }
