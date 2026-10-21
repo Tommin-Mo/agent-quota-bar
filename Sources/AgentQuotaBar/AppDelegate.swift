@@ -107,19 +107,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.render()
+            self?.refreshThemeSurfaces()
         }
     }
 
     // MARK: 开发调试（AQB_* 环境变量，不影响正常使用）
 
     private func toggleAppearance() {
-        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let dark = Theme.currentAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         service.config.set("appearance", dark ? "light" : "dark")
         try? service.config.save()
         applyAppearance()
-        popoverController.refreshAppearance()
+        refreshThemeSurfaces()
+    }
+
+    /// 外观切换后立刻刷新一次，再在 AppKit 真正消化外观后补两次。
+    private func refreshThemeSurfaces() {
+        popoverController?.refreshAppearance()
         settingsController?.reloadForAppearance()
+        for delay in [0.05, 0.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.popoverController?.refreshAppearance()
+                self?.settingsController?.reloadForAppearance()
+            }
+        }
     }
 
     private func applyAppearance() {
@@ -192,6 +203,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if env["AQB_TOGGLE_APPEARANCE"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
                 self?.toggleAppearance()
+                if let path = env["AQB_TOGGLE_SNAPSHOT"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                        guard let view = self?.popoverController.view else { return }
+                        self?.writeSnapshot(of: view, to: path)
+                    }
+                }
             }
         }
 
@@ -201,8 +218,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.service.config.set("appearance", appearance)
                 try? self.service.config.save()
                 self.applyAppearance()
-                self.popoverController.refreshAppearance()
-                self.settingsController?.reloadForAppearance()
+                self.refreshThemeSurfaces()
+                if let path = env["AQB_TEST_APPEARANCE_SNAPSHOT"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                        guard let view = self.settingsController?.window?.contentView else { return }
+                        self.writeSnapshot(of: view, to: path)
+                    }
+                }
             }
         }
 
@@ -553,11 +575,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 },
                 onAppearanceChanged: { [weak self] in
                     guard let self else { return }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        self.applyAppearance()
-                        self.popoverController.refreshAppearance()
-                        self.settingsController?.reloadForAppearance()
-                    }
+                    self.applyAppearance()
+                    self.refreshThemeSurfaces()
                 },
                 onCheckin: { [weak self] in
                     self?.checkin.runNow(manual: true)
@@ -686,15 +705,14 @@ final class ThemedLabel: NSTextField {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        textColor = roleColor.resolvedForAppearance(NSApp.effectiveAppearance)
+        textColor = roleColor.resolvedForAppearance()
         needsDisplay = true
     }
 
     func applyRole(_ color: NSColor) {
         roleColor = color
-        // 用 App 级别的外观，而不是视图自己的 effectiveAppearance：
-        // 新建行尚未入窗口时，视图级外观可能还是浅色，会把文字固定成黑色。
-        textColor = color.resolvedForAppearance(NSApp.effectiveAppearance)
+        // 显式外观优先；避免 effectiveAppearance 晚一拍造成深浅色错配。
+        textColor = color.resolvedForAppearance()
         needsDisplay = true
     }
 }

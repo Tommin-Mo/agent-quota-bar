@@ -1,6 +1,13 @@
 import AppKit
 
 enum Theme {
+    /// 显式外观优先于 effectiveAppearance。
+    /// 切换外观后 effectiveAppearance 可能晚一个 runloop 才更新，旧代码会在同一帧里
+    /// 用深色文字配浅色背景（或反过来）。
+    static var currentAppearance: NSAppearance {
+        NSApp.appearance ?? NSApp.effectiveAppearance
+    }
+
     static func hex(_ value: UInt32) -> NSColor {
         NSColor(
             srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
@@ -39,7 +46,7 @@ extension NSColor {
     /// 在 app 当前外观下解析动态色，再转 CGColor；避免重建 UI 时拿到旧外观的颜色。
     func resolvedCGColor() -> CGColor {
         var resolved = cgColor
-        NSApp.effectiveAppearance.performAsCurrentDrawingAppearance {
+        Theme.currentAppearance.performAsCurrentDrawingAppearance {
             resolved = cgColor
         }
         return resolved
@@ -47,7 +54,7 @@ extension NSColor {
 
     /// 把动态色固定成指定外观下的具体颜色，避免 NSTextField 缓存了错误外观的颜色。
     func resolvedForAppearance(_ appearance: NSAppearance? = nil) -> NSColor {
-        let target = appearance ?? NSApp.effectiveAppearance
+        let target = appearance ?? Theme.currentAppearance
         var color = cgColor
         target.performAsCurrentDrawingAppearance {
             color = cgColor

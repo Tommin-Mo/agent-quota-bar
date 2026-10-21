@@ -2,6 +2,15 @@ import AppKit
 
 // MARK: - 弹出面板
 
+final class ThemedRootView: NSView {
+    var onAppearanceChange: (() -> Void)?
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
+    }
+}
+
 final class QuotaPopoverViewController: NSViewController {
     private let service: QuotaService
     var onConfigure: ((String) -> Void)?
@@ -10,7 +19,7 @@ final class QuotaPopoverViewController: NSViewController {
     var onToggleAppearance: (() -> Void)?
     var onReorder: (([String]) -> Void)?
 
-    private let root = NSView()
+    private let root = ThemedRootView()
     private let titleLabel = NSTextField(labelWithString: "Agent 额度")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let rowsStack = NSStackView()
@@ -40,6 +49,10 @@ final class QuotaPopoverViewController: NSViewController {
     }
 
     override func loadView() {
+        root.onAppearanceChange = { [weak self] in
+            guard let self, self.view.window != nil else { return }
+            self.refreshAppearance()
+        }
         root.wantsLayer = true
         root.layer?.backgroundColor = Theme.background.resolvedCGColor()
         root.frame = NSRect(x: 0, y: 0, width: 380, height: 520)
@@ -221,7 +234,13 @@ final class QuotaPopoverViewController: NSViewController {
     }
 
     func refreshAppearance() {
-        view.window?.appearance = NSApp.appearance
+        if let target = NSApp.appearance {
+            if view.window?.appearance?.name != target.name {
+                view.window?.appearance = target
+            }
+        } else if view.window?.appearance != nil {
+            view.window?.appearance = nil
+        }
         if let snapshot = lastSnapshot {
             update(snapshot: snapshot, error: lastError, isRefreshing: lastRefreshing)
         }
@@ -234,7 +253,7 @@ final class QuotaPopoverViewController: NSViewController {
         titleLabel.textColor = .labelColor.resolvedForAppearance()
         subtitleLabel.textColor = Theme.tertiary.resolvedForAppearance()
         footerLabel.textColor = Theme.tertiary.resolvedForAppearance()
-        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let dark = Theme.currentAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         themeButton.symbolName = dark ? "sun.max" : "moon"
         view.needsDisplay = true
     }
@@ -855,6 +874,6 @@ final class LogoBadgeView: NSView {
     }
 
     private func updateInk() {
-        imageView.contentTintColor = NSColor.labelColor.resolvedForAppearance(NSApp.effectiveAppearance)
+        imageView.contentTintColor = NSColor.labelColor.resolvedForAppearance()
     }
 }
