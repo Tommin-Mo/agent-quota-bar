@@ -105,8 +105,9 @@ final class QuotaService {
         let patterns = [
             "could not resolve host", "network is unreachable", "no route to host",
             "failed to connect", "connection refused", "network request failed",
-            "curl: (5)", "curl: (6)", "curl: (7)", "curl: (28)",
+            "curl: (5)", "curl: (6)", "curl: (7)", "curl: (28)", "curl: (35)",
             "could not resolve proxy", "network is down", "timed out", "timeout",
+            "ssl_error", "ssl_connect", "certificate",
         ]
         return patterns.contains { text.contains($0) }
     }

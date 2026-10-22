@@ -654,11 +654,13 @@ final class ProviderRowView: NSView {
             actionRow.alignment = .top
             actionRow.spacing = 8
 
-            let message = provider.error ?? provider.detail ?? "需要补充凭证"
+            let message = provider.status == "error"
+                ? errorHint(for: provider)
+                : (provider.error ?? provider.detail ?? "需要补充凭证")
             let messageLabel = wrappingLabel(
                 message,
                 size: 10,
-                color: provider.status == "error" ? .systemRed : Theme.secondary,
+                color: provider.status == "error" ? .systemOrange : Theme.secondary,
                 width: 310
             )
             actionRow.addArrangedSubview(messageLabel)
@@ -746,11 +748,47 @@ final class ProviderRowView: NSView {
             if provider.id == "deepseek" { return "API 余额（按量计费）" }
             return provider.detail ?? "已连接"
         case "error":
-            return "连接失败"
+            return errorSummary(for: provider)
         case "unconfigured":
             return "还未连接"
         default:
             return ""
+        }
+    }
+
+    private func errorSummary(for provider: ProviderStatus) -> String {
+        let text = (provider.error ?? "").lowercased()
+        if text.contains("ssl_") || text.contains("ssl_connect") || text.contains("curl: (35)") {
+            return "SSL 连接失败"
+        }
+        if text.contains("could not resolve host") || text.contains("curl: (6)") {
+            return "DNS 解析失败"
+        }
+        if text.contains("timed out") || text.contains("curl: (28)") || text.contains("timeout") {
+            return "连接超时"
+        }
+        if text.contains("network is unreachable") || text.contains("no route to host") {
+            return "网络不可达"
+        }
+        if text.contains("connection refused") || text.contains("failed to connect") || text.contains("curl: (7)") {
+            return "无法连接服务器"
+        }
+        if text.contains("401") || text.contains("unauthorized") || text.contains("登录态") {
+            return "登录态失效"
+        }
+        if text.contains("403") || text.contains("forbidden") {
+            return "无权限访问"
+        }
+        return "连接失败"
+    }
+
+    private func errorHint(for provider: ProviderStatus) -> String {
+        switch errorSummary(for: provider) {
+        case "SSL 连接失败": return "检查代理或网络后重试"
+        case "DNS 解析失败", "网络不可达", "连接超时", "无法连接服务器": return "检查网络后重试"
+        case "登录态失效": return "重新登录后重试"
+        case "无权限访问": return "检查账号权限"
+        default: return "检查配置后重试"
         }
     }
 
