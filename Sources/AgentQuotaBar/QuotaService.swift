@@ -22,9 +22,20 @@ final class QuotaService {
     private(set) var snapshot: QuotaSnapshot?
     private(set) var errorMessage: String?
     private(set) var isRefreshing = false
+    private(set) var isOffline = false
 
     let config = ConfigStore()
     var onChange: (() -> Void)?
+    private let cacheURL: URL
+
+    init() {
+        cacheURL = config.url.deletingLastPathComponent().appendingPathComponent("last-snapshot.json")
+        if let data = try? Data(contentsOf: cacheURL),
+           let cached = try? JSONDecoder().decode(QuotaSnapshot.self, from: data),
+           !cached.providers.isEmpty {
+            snapshot = cached
+        }
+    }
 
     func refresh() {
         guard !isRefreshing else { return }
@@ -38,15 +49,66 @@ final class QuotaService {
             DispatchQueue.main.async {
                 self.isRefreshing = false
                 switch result {
-                case .success(let snapshot):
-                    self.snapshot = snapshot
-                    self.errorMessage = nil
+                case .success(let incoming):
+                    self.apply(incoming)
                 case .failure(let error):
                     self.errorMessage = error.localizedDescription
                 }
                 self.onChange?()
             }
         }
+    }
+
+    /// 保留最后一次可用数据；网络错误不覆盖旧快照。
+    private func apply(_ incoming: QuotaSnapshot) {
+        let active = incoming.providers.filter { $0.status != "disabled" }
+        let networkErrors = active.filter(Self.isNetworkProvider)
+        let allNetwork = !active.isEmpty && networkErrors.count == active.count
+
+        if allNetwork {
+            isOffline = true
+            errorMessage = nil
+            // 有缓存就继续展示缓存，连时间都不改；没有缓存则保持空状态。
+            return
+        }
+
+        var providers = incoming.providers
+        if !networkErrors.isEmpty, let old = snapshot {
+            providers = providers.map { provider in
+                guard Self.isNetworkProvider(provider),
+                      let previous = old.providers.first(where: { $0.id == provider.id })
+                else { return provider }
+                return previous
+            }
+        }
+
+        let merged = QuotaSnapshot(
+            schema: incoming.schema,
+            updatedAt: incoming.updatedAt,
+            providers: providers
+        )
+        snapshot = merged
+        isOffline = !networkErrors.isEmpty
+        errorMessage = nil
+        saveCache(merged)
+    }
+
+    private func saveCache(_ snapshot: QuotaSnapshot) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        try? data.write(to: cacheURL, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
+    }
+
+    private static func isNetworkProvider(_ provider: ProviderStatus) -> Bool {
+        guard provider.status == "error" else { return false }
+        let text = (provider.error ?? "").lowercased()
+        let patterns = [
+            "could not resolve host", "network is unreachable", "no route to host",
+            "failed to connect", "connection refused", "network request failed",
+            "curl: (5)", "curl: (6)", "curl: (7)", "curl: (28)",
+            "could not resolve proxy", "network is down", "timed out", "timeout",
+        ]
+        return patterns.contains { text.contains($0) }
     }
 
     /// 单独验证某一家（配置窗口里用）。
@@ -200,11 +262,11 @@ final class QuotaService {
         let fileManager = FileManager.default
         var candidates: [String] = []
 
-        if let resource = Bundle.main.resourceURL?.appendingPathComponent("collector.js").path {
-            candidates.append(resource)
-        }
         if let custom = ProcessInfo.processInfo.environment["AGENT_QUOTA_COLLECTOR"] {
             candidates.append(custom)
+        }
+        if let resource = Bundle.main.resourceURL?.appendingPathComponent("collector.js").path {
+            candidates.append(resource)
         }
         candidates.append(fileManager.currentDirectoryPath + "/collector/collector.js")
 

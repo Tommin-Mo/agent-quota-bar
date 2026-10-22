@@ -37,6 +37,7 @@ final class QuotaPopoverViewController: NSViewController {
     private var lastSnapshot: QuotaSnapshot?
     private var lastError: String?
     private var lastRefreshing = false
+    private var lastOffline = false
     private let spinner = NSProgressIndicator()
     private var draggingRow: ProviderRowView?
 
@@ -248,7 +249,12 @@ final class QuotaPopoverViewController: NSViewController {
             view.window?.appearance = nil
         }
         if let snapshot = lastSnapshot {
-            update(snapshot: snapshot, error: lastError, isRefreshing: lastRefreshing)
+            update(
+                snapshot: snapshot,
+                error: lastError,
+                isRefreshing: lastRefreshing,
+                isOffline: lastOffline
+            )
         }
         applyAppearanceRecursively(to: view)
         root.layer?.backgroundColor = Theme.background.resolvedCGColor()
@@ -274,7 +280,12 @@ final class QuotaPopoverViewController: NSViewController {
         summaryCheckin.stringValue = done ? "已签" : (running ? "签到中" : "待签")
         setThemedColor(summaryCheckin, done ? QuotaStyle.healthyColor : .labelColor)
         if let snapshot = lastSnapshot {
-            update(snapshot: snapshot, error: lastError, isRefreshing: lastRefreshing)
+            update(
+                snapshot: snapshot,
+                error: lastError,
+                isRefreshing: lastRefreshing,
+                isOffline: lastOffline
+            )
         }
     }
 
@@ -286,10 +297,11 @@ final class QuotaPopoverViewController: NSViewController {
         onToggleAppearance?()
     }
 
-    func update(snapshot: QuotaSnapshot?, error: String?, isRefreshing: Bool) {
+    func update(snapshot: QuotaSnapshot?, error: String?, isRefreshing: Bool, isOffline: Bool = false) {
         lastSnapshot = snapshot
         lastError = error
         lastRefreshing = isRefreshing
+        lastOffline = isOffline
         rowsStack.arrangedSubviews.forEach {
             rowsStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
@@ -298,8 +310,12 @@ final class QuotaPopoverViewController: NSViewController {
         if isRefreshing { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
 
         guard let snapshot else {
-            subtitleLabel.stringValue = error == nil ? "正在查询…" : "查询失败"
-            if let error {
+            subtitleLabel.stringValue = isOffline
+                ? "网络未连接"
+                : (error == nil ? "正在查询…" : "查询失败")
+            if isOffline {
+                addOfflineBanner()
+            } else if let error {
                 let label = wrappingLabel(error, size: 11, color: Theme.secondary, width: 310)
                 rowsStack.addArrangedSubview(label)
                 label.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
@@ -308,11 +324,18 @@ final class QuotaPopoverViewController: NSViewController {
             summaryLowest.stringValue = "—"
             summaryCheckin.stringValue = checkinDone ? "已签" : "待签"
             setThemedColor(summaryCheckin, checkinDone ? QuotaStyle.healthyColor : .labelColor)
-            footerLabel.stringValue = isRefreshing ? "正在查询…" : "尚未刷新"
+            if isOffline {
+                footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
+                footerLabel.textColor = .systemOrange
+            } else {
+                footerLabel.stringValue = isRefreshing ? "正在查询…" : "尚未刷新"
+                footerLabel.textColor = Theme.tertiary
+            }
             updatePreferredSize()
             return
         }
 
+        if isOffline { addOfflineBanner() }
         let ordered = orderedProviders(snapshot)
         for (index, provider) in ordered.enumerated() {
             let row = ProviderRowView(
@@ -334,7 +357,9 @@ final class QuotaPopoverViewController: NSViewController {
             row.addGestureRecognizer(pan)
         }
 
-        subtitleLabel.stringValue = "\(snapshot.usableCount)/\(snapshot.enabledCount) 个服务 · \(timeText(snapshot.updatedDate))"
+        subtitleLabel.stringValue = isOffline
+            ? "网络未连接 · 显示 \(timeText(snapshot.updatedDate)) 的数据"
+            : "\(snapshot.usableCount)/\(snapshot.enabledCount) 个服务 · \(timeText(snapshot.updatedDate))"
 
         let percents = snapshot.providers.compactMap { provider in
             provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent
@@ -354,7 +379,10 @@ final class QuotaPopoverViewController: NSViewController {
         summaryCheckin.stringValue = checkinDone ? "已签" : (checkinRunning ? "签到中" : "待签")
         setThemedColor(summaryCheckin, checkinDone ? QuotaStyle.healthyColor : .labelColor)
 
-        if let error {
+        if isOffline {
+            footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
+            footerLabel.textColor = .systemOrange
+        } else if let error {
             footerLabel.stringValue = "⚠︎ " + error
             footerLabel.textColor = .systemOrange
         } else {
@@ -379,6 +407,17 @@ final class QuotaPopoverViewController: NSViewController {
             result.append(provider)
         }
         return result
+    }
+
+    private func addOfflineBanner() {
+        let banner = wrappingLabel(
+            "网络未连接，显示上次数据，联网后自动刷新",
+            size: 11,
+            color: .systemOrange,
+            width: 310
+        )
+        rowsStack.addArrangedSubview(banner)
+        banner.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
     }
 
     private func updatePreferredSize() {

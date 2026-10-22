@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Collector 输出模型
 
-struct QuotaSnapshot: Decodable {
+struct QuotaSnapshot: Codable {
     let schema: Int?
     let updatedAt: String
     let providers: [ProviderStatus]
@@ -24,7 +24,7 @@ struct CheckinResult: Decodable {
     let streak: Int?
 }
 
-struct ProviderStatus: Decodable, Identifiable {
+struct ProviderStatus: Codable, Identifiable {
     let id: String
     let name: String
     let status: String
@@ -38,7 +38,7 @@ struct ProviderStatus: Decodable, Identifiable {
     var isUsable: Bool { status == "ok" || status == "warn" }
 }
 
-struct QuotaMetric: Decodable, Identifiable {
+struct QuotaMetric: Codable, Identifiable {
     let label: String
     let kind: String
     let usedPercent: Double?

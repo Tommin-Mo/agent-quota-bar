@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private lazy var checkin = CheckinService(service: service)
     private var timer: Timer?
     private var checkinTimer: Timer?
+    private var offlineTimer: Timer?
+    private lazy var networkMonitor = NetworkMonitor()
     private var popoverController: QuotaPopoverViewController!
     private var settingsController: SettingsWindowController?
     private var setupControllers: [String: SetupWindowController] = [:]
@@ -74,6 +76,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = .transient
         popover.animates = false
         popover.delegate = self
+
+        networkMonitor.onChange = { [weak self] online in
+            guard let self else { return }
+            if online && self.service.isOffline {
+                self.service.refresh()
+            }
+        }
 
         service.onChange = { [weak self] in
             DispatchQueue.main.async { self?.render() }
@@ -304,6 +313,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // MARK: 状态栏
 
+    private func updateOfflineRetry() {
+        if service.isOffline {
+            guard offlineTimer == nil else { return }
+            let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+                self?.service.refresh()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            offlineTimer = timer
+        } else {
+            offlineTimer?.invalidate()
+            offlineTimer = nil
+        }
+    }
+
     private func scheduleTimer() {
         timer?.invalidate()
         let timer = Timer(timeInterval: TimeInterval(service.config.refreshSeconds), repeats: true) { [weak self] _ in
@@ -343,7 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 button.attributedTitle = NSAttributedString(string: "")
                 button.imagePosition = .imageOnly
                 let name = ProviderStyles.style(for: id).shortName
-                button.toolTip = "\(name)\n\(item.tooltip)"
+                button.toolTip = "\(name)\n\(item.tooltip)" + (service.isOffline ? "\n网络未连接，显示上次数据" : "")
             } else {
                 button.image = MenuBarIcon.make(
                     provider: "codex",
@@ -366,14 +389,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 ink: menuBarInk()
             )
             button.attributedTitle = NSAttributedString(string: "")
-            button.toolTip = service.errorMessage ?? "点击打开面板"
+            button.toolTip = service.isOffline
+                ? "网络未连接，等待恢复"
+                : (service.errorMessage ?? "点击打开面板")
         }
 
         popoverController.update(
             snapshot: visibleSnapshot,
             error: service.errorMessage,
-            isRefreshing: service.isRefreshing
+            isRefreshing: service.isRefreshing,
+            isOffline: service.isOffline
         )
+        updateOfflineRetry()
         if popover.isShown {
             popover.contentSize = popoverController.preferredContentSize
         }
@@ -403,7 +430,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
             if let path = env["AQB_SNAPSHOT"], !didPopoverSnapshot {
                 didPopoverSnapshot = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                let delay = Double(env["AQB_SNAPSHOT_DELAY"] ?? "") ?? 0.8
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                     guard let view = self?.popoverController.view else { return }
                     self?.writeSnapshot(of: view, to: path)
                 }
