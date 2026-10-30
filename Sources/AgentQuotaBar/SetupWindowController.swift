@@ -235,6 +235,30 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         status.preferredMaxLayoutWidth = 450
         rows.append(status)
 
+        if providerID == "codex" {
+            let auth = label(codexAuthSummary(), size: 10.5, color: Theme.tertiary)
+            auth.maximumNumberOfLines = 2
+            auth.lineBreakMode = .byTruncatingMiddle
+            rows.append(auth)
+
+            if let error = codexCurrentError() {
+                let errorLabel = label(ProviderErrorText.display(error), size: 10.5, color: .systemOrange)
+                errorLabel.maximumNumberOfLines = 2
+                errorLabel.lineBreakMode = .byWordWrapping
+                errorLabel.preferredMaxLayoutWidth = 450
+                rows.append(errorLabel)
+            }
+
+            let importButton = codexLinkButton("导入 auth.json", action: #selector(importCodexAuth))
+            let loginButton = codexLinkButton("复制 codex login", action: #selector(copyCodexLogin))
+            let browserButton = codexLinkButton("打开 ChatGPT", action: #selector(openPage))
+            let actions = NSStackView(views: [importButton, loginButton, browserButton])
+            actions.orientation = .horizontal
+            actions.alignment = .centerY
+            actions.spacing = 12
+            rows.append(actions)
+        }
+
         if providerID == "trae" {
             let popup = NSPopUpButton()
             for (code, title) in [("cn", "Trae CN（国内版）"), ("solo", "TRAE SOLO CN"),
@@ -339,6 +363,81 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         return box
     }
 
+    private func codexLinkButton(_ title: String, action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.bezelStyle = .inline
+        button.isBordered = false
+        button.font = .systemFont(ofSize: 10.5, weight: .medium)
+        button.contentTintColor = Theme.accent
+        return button
+    }
+
+    private func codexAuthSummary() -> String {
+        let path = NSString(string: "~/.codex/auth.json").expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: path),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = object["tokens"] as? [String: Any],
+              let access = tokens["access_token"] as? String,
+              !access.isEmpty
+        else {
+            return "登录态：未找到 ~/.codex/auth.json"
+        }
+        return "登录态：已找到（\(path)）"
+    }
+
+    private func codexCurrentError() -> String? {
+        guard let provider = service.snapshot?.providers.first(where: { $0.id == "codex" }) else { return nil }
+        return provider.error ?? provider.detail
+    }
+
+    @objc private func importCodexAuth() {
+        guard let window else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择 Codex auth.json"
+        panel.allowedFileTypes = ["json"]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let source = panel.url else { return }
+            guard let data = try? Data(contentsOf: source),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tokens = object["tokens"] as? [String: Any],
+                  let access = tokens["access_token"] as? String,
+                  !access.isEmpty
+            else {
+                self.showStatus("不是有效的 Codex auth.json", color: .systemRed)
+                return
+            }
+            let fm = FileManager.default
+            let home = fm.homeDirectoryForCurrentUser
+            let directory = home.appendingPathComponent(".codex", isDirectory: true)
+            let destination = directory.appendingPathComponent("auth.json")
+            do {
+                try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+                if fm.fileExists(atPath: destination.path) {
+                    let backup = directory.appendingPathComponent("auth.json.agent-quota.bak")
+                    try? fm.removeItem(at: backup)
+                    try? fm.copyItem(at: destination, to: backup)
+                }
+                try data.write(to: destination, options: .atomic)
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+                self.showStatus("✓ 已导入 Codex 登录态，正在重新检测", color: .systemGreen)
+                self.service.refresh()
+                self.onSaved()
+            } catch {
+                self.showStatus("导入失败：\(error.localizedDescription)", color: .systemRed)
+            }
+        }
+    }
+
+    @objc private func copyCodexLogin() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString("codex login", forType: .string)
+        showStatus("已复制：codex login", color: Theme.secondary)
+    }
+
     private func resizeWindowToFit() {
         guard let window else { return }
         container.layoutSubtreeIfNeeded()
@@ -378,7 +477,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private func automaticDescription() -> String {
         switch providerID {
         case "codex":
-            return "读取本机 Codex 登录态。"
+            return "Codex 使用 OAuth 登录态，不使用 API Key。可导入 ~/.codex/auth.json，或复制命令运行 codex login 重新登录。"
         case "trae":
             return "读取本机 Trae 登录态。"
         case "workbuddy":
@@ -551,7 +650,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
                     self.showStatus("✓ 已连接 · \(value)", color: status.status == "warn" ? .systemOrange : .systemGreen)
                     self.onSaved()
                 } else {
-                    self.showStatus("✗ " + (status.error ?? status.detail ?? "验证失败"), color: .systemRed)
+                    let summary = ProviderErrorText.display(status.error ?? status.detail)
+                    self.showStatus("✗ " + summary, color: .systemRed)
                 }
             case .failure(let error):
                 self.showStatus("✗ " + error.localizedDescription, color: .systemRed)

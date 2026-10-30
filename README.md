@@ -62,7 +62,7 @@ open dist/AgentQuotaBar.app
 
 ## 首次使用
 
-Codex、Trae 自动读取本机登录态。其余：
+Codex 使用 OAuth 登录态，不使用 API Key；设置页可导入 `~/.codex/auth.json` 或复制 `codex login` 重新登录。Trae 自动读取本机登录态。其余：
 
 1. 点菜单栏 → 未配置的行上点 **「配置」**；
 2. **WorkBuddy / OpenCode Zen 会直接弹出内置浏览器登录窗口**，登录成功后自动抓取 token/cookie 并验证；

@@ -107,6 +107,7 @@ final class QuotaService {
             "failed to connect", "connection refused", "network request failed",
             "curl: (5)", "curl: (6)", "curl: (7)", "curl: (28)", "curl: (35)",
             "could not resolve proxy", "network is down", "timed out", "timeout",
+            "etimedout", "econnreset", "enotfound", "eai_again",
             "ssl_error", "ssl_connect", "certificate",
         ]
         return patterns.contains { text.contains($0) }
