@@ -419,7 +419,8 @@ final class QuotaPopoverViewController: NSViewController {
     private func updatePreferredSize() {
         view.layoutSubtreeIfNeeded()
         let rowsHeight = rowsStack.fittingSize.height
-        let height = min(840, max(180, rowsHeight + 150))
+        // 顶部 14 + header 约 31 + 间距 12 + rows + 间距 8 + footer 约 16 + 底部 10
+        let height = min(840, max(160, rowsHeight + 92))
         preferredContentSize = NSSize(width: 380, height: height)
         view.setFrameSize(preferredContentSize)
     }
