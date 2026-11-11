@@ -22,13 +22,15 @@ macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek** �
 
 ![面板](docs/popover.png)
 
-面板顶部是概览（服务数 / 最低额度 / 签到状态），下面是平面列表：品牌 logo、名称、套餐、大号数值、按额度维度拆分的进度与「剩 X%」、重置时间。**上下拖动任意一行即可排序**。
+面板顶部不再有概览卡片，节省出来的高度全部给列表。每张卡片显示：品牌 logo、名称、套餐、大号剩余值、按窗口拆分的消耗、进度与「剩 X%」、重置时间。**上下拖动任意一行即可排序**。
 
 网络断开时不会用 0/5 和一大段 curl 报错覆盖面板：会保留最近一次成功快照（`~/.config/agent-quota/last-snapshot.json`），显示「网络未连接 · 显示上次数据」，并在网络恢复后自动刷新。单个 provider 的 SSL / DNS / 超时错误也会收成「SSL 连接失败」「DNS 解析失败」「连接超时」这类短提示，不再显示 curl 原文。
 
 - 每条额度都有进度条（包括只有一条额度的 Codex）。
 - 重置时间：24 小时内精确到分钟（`3 小时 50 分钟后重置`），超过 24 小时只显示到小时（`3 天 5 小时后重置`），避免过长。
 - Trae / WorkBuddy 的签到状态直接放在各自行里：已签显示「✓ 今日已签」，未签显示「签到」入口。
+- 百分比服务按窗口显示 `5 小时消耗 1%`、`本周消耗 9%`、`本月消耗 70%`，不把不同窗口相加。
+- Trae / WorkBuddy 显示累计消费基线差：`今日 -100`；DeepSeek 按余额下降累计 `今日 -¥0.42`，没有变化就隐藏，不显示 `—` 或 `≈`。
 - 主数值和健康进度条统一使用青色；低于警戒/危险阈值才变橙/红，签到成功也是同一青色，避免多种绿。
 - Trae 读取 v2 entitlement；WorkBuddy 用本机安全存储解出的 token 查剩余积分。
 
@@ -148,6 +150,8 @@ Trae 与 WorkBuddy 每天自动签到，默认 09:00，失败每 30 分钟重试
 - 签到结果写入 `checkin.lastDate / lastSummary / workbuddyStreak`，面板对应行显示「✓ 今日已签」
 
 **后台签到**：App 启动时安装一个 `com.agentquota.checkin` LaunchAgent，每小时检查一次；到设定时间且当天没签时才真正请求，App 没开着也会执行，结果写回配置。脚本在 `Resources/checkin-background.sh`，LaunchAgent 在 `~/Library/LaunchAgents/com.agentquota.checkin.plist`。
+
+**用量采样**：App 运行期间每 60 秒单独查一次 DeepSeek 余额；同时安装 `com.agentquota.usage` LaunchAgent，每 5 分钟采样一次 Trae / WorkBuddy / DeepSeek 的累计消费或余额，App 关闭也能记录。所有状态在 `~/.config/agent-quota/usage.json`，本地使用文件锁，不会和 App 进程互相覆盖。
 
 接口逻辑参考并适配自 [wb-trae-checkin](https://github.com/3338320742zh-collab/wb-trae-checkin) 与 [workbuddy-checkin](https://github.com/tars1230/workbuddy-checkin)，只保留 macOS 需要的部分，没有引入 Windows 计划任务/通知代码。
 

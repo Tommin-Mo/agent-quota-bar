@@ -1,5 +1,10 @@
 import AppKit
 
+if CommandLine.arguments.contains("--usage-sample") {
+    UsageSampler.run()
+    exit(0)
+}
+
 // 单实例：从 dist 和 /Applications 各启动一次时，只保留一个菜单栏图标。
 let bundleID = Bundle.main.bundleIdentifier ?? "com.tommin.agentquotabar"
 if let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)

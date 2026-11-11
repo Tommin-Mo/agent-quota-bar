@@ -170,7 +170,6 @@ final class QuotaPopoverViewController: NSViewController {
         footer.translatesAutoresizingMaskIntoConstraints = false
 
         root.addSubview(header)
-        root.addSubview(summaryCard)
         root.addSubview(rowsStack)
         root.addSubview(footer)
 
@@ -179,11 +178,7 @@ final class QuotaPopoverViewController: NSViewController {
             header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             header.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
 
-            summaryCard.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10),
-            summaryCard.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            summaryCard.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
-
-            rowsStack.topAnchor.constraint(equalTo: summaryCard.bottomAnchor, constant: 10),
+            rowsStack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
             rowsStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             rowsStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
 
@@ -340,6 +335,7 @@ final class QuotaPopoverViewController: NSViewController {
         for (index, provider) in ordered.enumerated() {
             let row = ProviderRowView(
                 provider: provider,
+                todaySpent: UsageTracker.shared.todaySpent(for: provider.id),
                 checkinDone: checkinDone,
                 checkinStreak: service.config.int("checkin.workbuddyStreak", default: 0),
                 onConfigure: { [weak self] in
@@ -491,6 +487,7 @@ final class QuotaPopoverViewController: NSViewController {
 final class ProviderRowView: NSView {
     let providerID: String
     private let provider: ProviderStatus
+    private let todaySpent: Double?
     private let checkinDone: Bool
     private let checkinStreak: Int
     private let onConfigure: () -> Void
@@ -506,6 +503,7 @@ final class ProviderRowView: NSView {
 
     init(
         provider: ProviderStatus,
+        todaySpent: Double?,
         checkinDone: Bool,
         checkinStreak: Int,
         onConfigure: @escaping () -> Void,
@@ -513,6 +511,7 @@ final class ProviderRowView: NSView {
     ) {
         self.providerID = provider.id
         self.provider = provider
+        self.todaySpent = todaySpent
         self.checkinDone = checkinDone
         self.checkinStreak = checkinStreak
         self.onConfigure = onConfigure
@@ -567,7 +566,7 @@ final class ProviderRowView: NSView {
 
         let value = label(valueText(provider), size: 20, weight: .semibold, color: valueColor(provider), monospaced: true)
         value.alignment = .right
-        let caption = label(valueCaption(provider), size: 10, color: Theme.tertiary)
+        let caption = label(valueCaption(provider, todaySpent: todaySpent), size: 10, color: Theme.tertiary)
         caption.alignment = .right
         let valueStack = NSStackView(views: [value, caption])
         valueStack.orientation = .vertical
@@ -590,7 +589,13 @@ final class ProviderRowView: NSView {
             meta.orientation = .horizontal
             meta.spacing = 8
             meta.alignment = .centerY
-            meta.addArrangedSubview(label(metric.label, size: 12, weight: .medium, color: Theme.secondary))
+            let used = metric.usedPercent ?? max(0, 100 - remaining)
+            meta.addArrangedSubview(label(
+                "\(metric.label)消耗 \(Int(used.rounded()))%",
+                size: 12,
+                weight: .medium,
+                color: Theme.secondary
+            ))
             let metaSpacer = NSView()
             metaSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             meta.addArrangedSubview(metaSpacer)
@@ -781,9 +786,15 @@ final class ProviderRowView: NSView {
         return "—"
     }
 
-    private func valueCaption(_ provider: ProviderStatus) -> String {
+    private func valueCaption(_ provider: ProviderStatus, todaySpent: Double?) -> String {
         if provider.metrics.contains(where: { $0.kind == "percent" }) { return "" }
         if provider.metrics.contains(where: { $0.kind == "credit" }) {
+            if let spent = todaySpent, spent > 0.0001 {
+                if provider.id == "deepseek" {
+                    return String(format: "今日 -¥%.2f", spent)
+                }
+                return "今日 -\(Int(spent.rounded()))"
+            }
             return (provider.id == "workbuddy" || provider.id == "trae") ? "积分" : "余额"
         }
         if provider.metrics.contains(where: { $0.kind == "text" }) { return "积分" }

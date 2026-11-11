@@ -38,6 +38,11 @@ final class QuotaService {
     }
 
     func refresh() {
+        refresh(only: nil)
+    }
+
+    /// `only` 用于 DeepSeek 的高频余额采样；只合并对应 provider，不覆盖其他数据。
+    func refresh(only: String?) {
         guard !isRefreshing else { return }
         isRefreshing = true
         onChange?()
@@ -45,12 +50,12 @@ final class QuotaService {
         let configPath = config.url.path
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let result = Result { try Self.runCollector(configPath: configPath) }
+            let result = Result { try Self.runCollector(configPath: configPath, only: only) }
             DispatchQueue.main.async {
                 self.isRefreshing = false
                 switch result {
                 case .success(let incoming):
-                    self.apply(incoming)
+                    self.apply(incoming, only: only)
                 case .failure(let error):
                     self.errorMessage = error.localizedDescription
                 }
@@ -60,7 +65,7 @@ final class QuotaService {
     }
 
     /// 保留最后一次可用数据；网络错误不覆盖旧快照。
-    private func apply(_ incoming: QuotaSnapshot) {
+    private func apply(_ incoming: QuotaSnapshot, only: String? = nil) {
         let active = incoming.providers.filter { $0.status != "disabled" }
         let networkErrors = active.filter(Self.isNetworkProvider)
         let allNetwork = !active.isEmpty && networkErrors.count == active.count
@@ -73,6 +78,20 @@ final class QuotaService {
         }
 
         var providers = incoming.providers
+        if let only, let old = snapshot {
+            // 单 provider 高频刷新：替换这一家，其他 provider 保持原样。
+            var mergedProviders = old.providers
+            for provider in providers {
+                if provider.id == only {
+                    if let index = mergedProviders.firstIndex(where: { $0.id == only }) {
+                        mergedProviders[index] = provider
+                    } else {
+                        mergedProviders.append(provider)
+                    }
+                }
+            }
+            providers = mergedProviders
+        }
         if !networkErrors.isEmpty, let old = snapshot {
             providers = providers.map { provider in
                 guard Self.isNetworkProvider(provider),
@@ -90,6 +109,7 @@ final class QuotaService {
         snapshot = merged
         isOffline = !networkErrors.isEmpty
         errorMessage = nil
+        UsageTracker.shared.record(snapshot: merged)
         saveCache(merged)
     }
 
@@ -143,6 +163,10 @@ final class QuotaService {
     }
 
     // MARK: - 子进程
+
+    static func fetchSnapshot(configPath: String) throws -> QuotaSnapshot {
+        try runCollector(configPath: configPath)
+    }
 
     private static func runCollector(configPath: String, only: String? = nil) throws -> QuotaSnapshot {
         let process = Process()

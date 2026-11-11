@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let service = QuotaService()
     private lazy var checkin = CheckinService(service: service)
     private var timer: Timer?
+    private var deepSeekTimer: Timer?
     private var checkinTimer: Timer?
     private var offlineTimer: Timer?
     private lazy var networkMonitor = NetworkMonitor()
@@ -33,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         applyAppearance()
         QuotaStyle.apply(service.config)
         BackgroundCheckin.installIfNeeded()
+        UsageSampler.installIfNeeded()
         if let icon = NSImage(named: "AppIcon") {
             NSApp.applicationIconImage = icon
         } else if let icon = NSImage(contentsOfFile: "Resources/AppIcon.icns") {
@@ -95,6 +97,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.checkin.runIfNeeded()
         }
         if let checkinTimer { RunLoop.main.add(checkinTimer, forMode: .common) }
+
+        // DeepSeek 余额下降需要更高频采样，才能覆盖外部调用产生的消费。
+        let deepSeekTimer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            self?.service.refresh(only: "deepseek")
+        }
+        RunLoop.main.add(deepSeekTimer, forMode: .common)
+        self.deepSeekTimer = deepSeekTimer
 
         render()
         refreshCheckinUI()

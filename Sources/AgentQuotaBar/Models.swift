@@ -34,6 +34,8 @@ struct ProviderStatus: Codable, Identifiable {
     let error: String?
     let account: String?
     let plan: String?
+    let consumed: Double?
+    let balance: Double?
 
     var isUsable: Bool { status == "ok" || status == "warn" }
 }

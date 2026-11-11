@@ -354,6 +354,7 @@ function collectDeepSeek(cfg) {
   return provider('deepseek', 'DeepSeek', available && total > 0 ? 'ok' : 'warn', metrics, {
     headline: fmtMoney(total, currency),
     detail: available ? 'API 余额（按量计费）' : '余额不足，API 不可用',
+    balance: total,
   });
 }
 
@@ -456,6 +457,7 @@ function collectTrae(cfg) {
         account: auth.userId,
         headline: String(Math.round(remainingCredits)),
         detail: '积分余额',
+        consumed: consumedCredits,
       });
     }
     if (checkinCredits != null) {
@@ -482,6 +484,7 @@ function collectTrae(cfg) {
     account: auth.userId,
     headline: percent ? `${Math.round(percent.remainingPercent)}%` : '',
     detail: planName || 'Trae 套餐额度',
+    consumed: consumedCredits,
   });
 }
 
@@ -749,6 +752,7 @@ function collectWorkBuddy(cfg) {
     account: uid,
     headline: `${Math.floor(remaining)}`,
     detail: source === 'auto' ? 'WorkBuddy 积分（自动）' : `WorkBuddy 积分（${source.split('.')[0]}）`,
+    consumed: total - remaining,
   });
 }
 
