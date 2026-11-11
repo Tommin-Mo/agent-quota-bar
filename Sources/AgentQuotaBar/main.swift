@@ -1,5 +1,13 @@
 import AppKit
 
+// 单实例：从 dist 和 /Applications 各启动一次时，只保留一个菜单栏图标。
+let bundleID = Bundle.main.bundleIdentifier ?? "com.tommin.agentquotabar"
+if let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+    .first(where: { $0.processIdentifier != getpid() }) {
+    existing.activate(options: [.activateIgnoringOtherApps])
+    exit(0)
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
