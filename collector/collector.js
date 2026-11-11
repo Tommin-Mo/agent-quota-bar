@@ -175,9 +175,8 @@ function fmtReset(ts) {
   const hours = Math.floor((totalMinutes % 1440) / 60);
   const mins = totalMinutes % 60;
   if (days > 0) {
-    if (hours === 0 && mins === 0) return `${days} 天后重置`;
-    if (mins === 0) return `${days} 天 ${hours} 小时后重置`;
-    return `${days} 天 ${hours} 小时 ${mins} 分钟后重置`;
+    if (hours === 0) return `${days} 天后重置`;
+    return `${days} 天 ${hours} 小时后重置`;
   }
   if (hours > 0) {
     if (mins === 0) return `${hours} 小时后重置`;
