@@ -27,6 +27,7 @@ macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek** �
 网络断开时不会用 0/5 和一大段 curl 报错覆盖面板：会保留最近一次成功快照（`~/.config/agent-quota/last-snapshot.json`），显示「网络未连接 · 显示上次数据」，并在网络恢复后自动刷新。单个 provider 的 SSL / DNS / 超时错误也会收成「SSL 连接失败」「DNS 解析失败」「连接超时」这类短提示，不再显示 curl 原文。
 
 - 每条额度都有进度条（包括只有一条额度的 Codex）。
+- 重置时间精确到分钟：`3 小时 50 分钟后重置`，跨天显示 `3 天 5 小时 25 分钟后重置`。
 - Trae / WorkBuddy 的签到状态直接放在各自行里：已签显示「✓ 今日已签」，未签显示「签到」入口。
 - 主数值和健康进度条统一使用青色；低于警戒/危险阈值才变橙/红，签到成功也是同一青色，避免多种绿。
 - Trae 读取 v2 entitlement；WorkBuddy 用本机安全存储解出的 token 查剩余积分。
@@ -186,6 +187,7 @@ docs/现有方案评估.md
 ## 已知限制
 
 - Codex 只读 `auth.json`，不刷新 token；过期后重开客户端。
+- 访问 `chatgpt.com` 这类需要代理的域名时先走系统代理，代理失败会自动直连重试。
 - OpenCode Zen 余额依赖 console cookie，会随浏览器会话失效（内置登录可续）。
 - WorkBuddy 登录态失效时，重新打开 WorkBuddy 桌面端即可；App 会在下次刷新时重新解封。
 - Trae 解密依赖客户端实现，客户端升级可能失效。

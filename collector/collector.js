@@ -95,33 +95,47 @@ function proxyFor(url) {
 function http(url, opts = {}) {
   const { method = 'GET', headers = {}, body = null, timeout = 25 } = opts;
   const proxy = proxyFor(url);
-  const args = ['-sS', '--compressed', '-m', String(timeout), '-w', '\n__AQB_STATUS__%{http_code}'];
-  if (proxy) args.push('--proxy', proxy);
-  for (const [k, v] of Object.entries(headers)) {
-    if (v !== undefined && v !== null && v !== '') args.push('-H', `${k}: ${v}`);
-  }
-  if (body !== null) args.push('--data-binary', body);
-  args.push(url);
+  // 代理优先；代理挂掉/端口没开时再直连，避免换网络后一直超时。
+  const candidates = [];
+  if (proxy) candidates.push(proxy);
+  candidates.push(null);
 
-  let out;
-  try {
-    out = execFileSync('curl', args, {
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: (timeout + 5) * 1000,
-    });
-  } catch (e) {
-    const msg = String(e.stderr || e.message || e).trim().split('\n')[0];
-    throw new Error(`网络请求失败（${new URL(url).hostname}）：${msg}`);
+  let firstError = null;
+  let lastError = null;
+  for (const candidate of candidates) {
+    const args = ['-sS', '--compressed', '-m', String(timeout), '-w', '\n__AQB_STATUS__%{http_code}'];
+    if (candidate) args.push('--proxy', candidate);
+    else if (proxy) args.push('--noproxy', '*');
+    for (const [k, v] of Object.entries(headers)) {
+      if (v !== undefined && v !== null && v !== '') args.push('-H', `${k}: ${v}`);
+    }
+    if (body !== null) args.push('--data-binary', body);
+    args.push(url);
+
+    let out;
+    try {
+      out = execFileSync('curl', args, {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: (timeout + 5) * 1000,
+      });
+    } catch (e) {
+      const msg = String(e.stderr || e.message || e).trim().split('\n')[0];
+      const error = `网络请求失败（${new URL(url).hostname}）：${msg}`;
+      if (!firstError) firstError = error;
+      lastError = error;
+      continue;
+    }
+    const match = out.match(/__AQB_STATUS__(\d+)\s*$/);
+    const status = match ? Number(match[1]) : 0;
+    const text = match ? out.slice(0, match.index) : out;
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {}
+    return { status, text, json };
   }
-  const match = out.match(/__AQB_STATUS__(\d+)\s*$/);
-  const status = match ? Number(match[1]) : 0;
-  const text = match ? out.slice(0, match.index) : out;
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {}
-  return { status, text, json };
+  throw new Error(firstError || lastError || '网络请求失败');
 }
 
 function pick(obj, ...paths) {
@@ -155,14 +169,21 @@ function fmtMoney(n, currency) {
 function fmtReset(ts) {
   if (!ts) return '';
   const diff = Math.max(0, ts - Date.now());
-  const mins = Math.round(diff / 60000);
-  if (mins < 1) return '即将重置';
-  if (mins < 60) return `${mins} 分钟后重置`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 48) return `${hours} 小时后重置`;
-  const days = Math.floor(hours / 24);
-  const rest = hours % 24;
-  return rest === 0 ? `${days} 天后重置` : `${days} 天 ${rest} 小时后重置`;
+  const totalMinutes = Math.floor(diff / 60000);
+  if (totalMinutes < 1) return '即将重置';
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const mins = totalMinutes % 60;
+  if (days > 0) {
+    if (hours === 0 && mins === 0) return `${days} 天后重置`;
+    if (mins === 0) return `${days} 天 ${hours} 小时后重置`;
+    return `${days} 天 ${hours} 小时 ${mins} 分钟后重置`;
+  }
+  if (hours > 0) {
+    if (mins === 0) return `${hours} 小时后重置`;
+    return `${hours} 小时 ${mins} 分钟后重置`;
+  }
+  return `${mins} 分钟后重置`;
 }
 
 function fmtDate(ts) {
