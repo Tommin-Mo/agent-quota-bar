@@ -499,12 +499,12 @@ final class ProviderRowView: NSView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
 
-        let badge = LogoBadgeView(provider: provider.id, color: style.color, size: 22)
+        let badge = LogoBadgeView(provider: provider.id, color: style.color, size: 24)
 
         let name = label(style.shortName, size: 14, weight: .semibold)
         let nameRow = NSStackView(views: [name])
@@ -547,7 +547,7 @@ final class ProviderRowView: NSView {
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let value = label(valueText(provider), size: 21, weight: .semibold, color: valueColor(provider), monospaced: true)
+        let value = label(valueText(provider), size: 20, weight: .semibold, color: valueColor(provider), monospaced: true)
         value.alignment = .right
 
         let valueRow = NSStackView()
@@ -555,13 +555,6 @@ final class ProviderRowView: NSView {
         valueRow.alignment = .firstBaseline
         valueRow.spacing = 4
         valueRow.addArrangedSubview(value)
-        if provider.metrics.contains(where: { $0.kind == "credit" }),
-           provider.id == "trae" || provider.id == "workbuddy" {
-            let unit = label("积分", size: 10.5, weight: .medium, color: Theme.tertiary)
-            unit.alignment = .left
-            valueRow.addArrangedSubview(unit)
-        }
-
         let valueStack = NSStackView()
         valueStack.orientation = .vertical
         valueStack.alignment = .trailing
@@ -590,6 +583,15 @@ final class ProviderRowView: NSView {
         header.spacing = 9
         stack.addArrangedSubview(header)
         header.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        header.heightAnchor.constraint(equalToConstant: 46).isActive = true
+
+        // 余额/积分卡没有窗口指标，统一成固定 66pt 行高：10 + 46 + 10，
+        // 避免左右内容把行撑出上下不对称的空白。
+        if !provider.metrics.contains(where: { $0.kind == "percent" }),
+           provider.status != "error",
+           provider.status != "unconfigured" {
+            heightAnchor.constraint(equalToConstant: 66).isActive = true
+        }
 
         let percentMetrics = provider.metrics.filter { $0.kind == "percent" }
         for metric in percentMetrics.prefix(3) {
@@ -666,7 +668,7 @@ final class ProviderRowView: NSView {
             messageLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -54).isActive = true
         }
 
-        stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12).isActive = true
+        stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10).isActive = true
 
         separator.wantsLayer = true
         separator.layer?.backgroundColor = Theme.separator.resolvedCGColor()
