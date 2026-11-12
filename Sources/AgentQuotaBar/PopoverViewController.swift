@@ -414,6 +414,46 @@ final class QuotaPopoverViewController: NSViewController {
 
 // MARK: - 单行
 
+/// 实心绿色圆圈 + 白色对勾：用于 WorkBuddy / Trae 今日已签到。
+final class CheckinBadgeView: NSView {
+    override var intrinsicContentSize: NSSize { NSSize(width: 15, height: 15) }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel("今日已签到")
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let diameter = min(bounds.width, bounds.height)
+        let circle = NSBezierPath(ovalIn: NSRect(x: 0, y: (bounds.height - diameter) / 2,
+                                                 width: diameter, height: diameter))
+        // 签到标记用真正的绿色；Theme.success 是品牌青色，容易被看成蓝绿色。
+        NSColor.systemGreen.setFill()
+        circle.fill()
+
+        let check = NSBezierPath()
+        check.lineWidth = 1.7
+        check.lineCapStyle = .round
+        check.lineJoinStyle = .round
+        check.move(to: NSPoint(x: diameter * 0.28, y: diameter * 0.53))
+        check.line(to: NSPoint(x: diameter * 0.44, y: diameter * 0.36))
+        check.line(to: NSPoint(x: diameter * 0.73, y: diameter * 0.67))
+        NSColor.white.setStroke()
+        check.stroke()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
 final class ProviderRowView: NSView {
     let providerID: String
     private let provider: ProviderStatus
@@ -474,6 +514,19 @@ final class ProviderRowView: NSView {
         if let plan = provider.plan, !plan.isEmpty {
             nameRow.addArrangedSubview(label(plan, size: 10, color: Theme.tertiary))
         }
+        if provider.id == "trae" || provider.id == "workbuddy" {
+            if checkinDone {
+                nameRow.addArrangedSubview(CheckinBadgeView())
+            } else {
+                let checkin = NSButton(title: "签到", target: self, action: #selector(checkinTapped))
+                checkin.isBordered = false
+                checkin.bezelStyle = .inline
+                checkin.font = .systemFont(ofSize: 10.5, weight: .medium)
+                checkin.contentTintColor = Theme.accent
+                checkin.setAccessibilityLabel("签到 \(style.shortName)")
+                nameRow.addArrangedSubview(checkin)
+            }
+        }
         if provider.status == "warn" && isExhausted(provider) {
             nameRow.addArrangedSubview(label("已用尽", size: 10, weight: .medium, color: .systemRed))
         }
@@ -516,6 +569,17 @@ final class ProviderRowView: NSView {
         valueStack.addArrangedSubview(valueRow)
         if let captionText = valueCaption(provider, todaySpent: todaySpent), !captionText.isEmpty {
             let caption = label(captionText, size: 10, color: Theme.secondary)
+            caption.alignment = .right
+            valueStack.addArrangedSubview(caption)
+        }
+
+        if valueCaption(provider, todaySpent: todaySpent) == nil,
+           provider.id == "deepseek",
+           let supporting = compactDetail(
+               provider.metrics.first(where: { $0.kind == "credit" })?.detail
+               ?? provider.metrics.first(where: { $0.kind == "text" })?.detail
+           ) {
+            let caption = label(supporting, size: 10, color: Theme.tertiary)
             caption.alignment = .right
             valueStack.addArrangedSubview(caption)
         }
@@ -566,32 +630,8 @@ final class ProviderRowView: NSView {
             bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
-        if provider.id == "trae" || provider.id == "workbuddy" {
-            var detail = "每日 +100 积分"
-            if provider.id == "workbuddy" && checkinStreak > 0 {
-                detail += " · 连续 \(checkinStreak) 天"
-            }
-            let checkinRow = NSStackView()
-            checkinRow.orientation = .horizontal
-            checkinRow.alignment = .centerY
-            checkinRow.spacing = 8
-            checkinRow.addArrangedSubview(label(detail, size: 10, color: Theme.tertiary))
-            let checkinSpacer = NSView()
-            checkinSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-            checkinRow.addArrangedSubview(checkinSpacer)
-            if checkinDone {
-                checkinRow.addArrangedSubview(label("✓ 今日已签", size: 10, weight: .medium, color: QuotaStyle.healthyColor))
-            } else {
-                let button = NSButton(title: "签到", target: self, action: #selector(checkinTapped))
-                button.isBordered = false
-                button.bezelStyle = .inline
-                button.font = .systemFont(ofSize: 10, weight: .medium)
-                button.contentTintColor = Theme.accent
-                checkinRow.addArrangedSubview(button)
-            }
-            stack.addArrangedSubview(checkinRow)
-            checkinRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        } else if let supporting = compactDetail(
+        if !["deepseek", "trae", "workbuddy"].contains(provider.id),
+           let supporting = compactDetail(
                     provider.metrics.first(where: { $0.kind == "credit" })?.detail
                     ?? provider.metrics.first(where: { $0.kind == "text" })?.detail
                   ) {
@@ -710,7 +750,7 @@ final class ProviderRowView: NSView {
     private func subtitle(for provider: ProviderStatus) -> String {
         switch provider.status {
         case "ok", "warn":
-            if provider.id == "trae" || provider.id == "workbuddy" { return "签到积分" }
+            if provider.id == "trae" || provider.id == "workbuddy" { return "积分" }
             if provider.id == "codex" { return "ChatGPT 订阅" }
             if provider.id == "deepseek" { return "API 余额（按量计费）" }
             return provider.detail ?? "已连接"
