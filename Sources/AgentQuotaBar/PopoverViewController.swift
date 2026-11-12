@@ -494,14 +494,31 @@ final class ProviderRowView: NSView {
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let value = label(valueText(provider), size: 20, weight: .semibold, color: valueColor(provider), monospaced: true)
+        let value = label(valueText(provider), size: 21, weight: .semibold, color: valueColor(provider), monospaced: true)
         value.alignment = .right
-        let caption = label(valueCaption(provider, todaySpent: todaySpent), size: 10, color: Theme.tertiary)
-        caption.alignment = .right
-        let valueStack = NSStackView(views: [value, caption])
+
+        let valueRow = NSStackView()
+        valueRow.orientation = .horizontal
+        valueRow.alignment = .firstBaseline
+        valueRow.spacing = 4
+        valueRow.addArrangedSubview(value)
+        if provider.metrics.contains(where: { $0.kind == "credit" }),
+           provider.id == "trae" || provider.id == "workbuddy" {
+            let unit = label("积分", size: 10.5, weight: .medium, color: Theme.tertiary)
+            unit.alignment = .left
+            valueRow.addArrangedSubview(unit)
+        }
+
+        let valueStack = NSStackView()
         valueStack.orientation = .vertical
         valueStack.alignment = .trailing
-        valueStack.spacing = 0
+        valueStack.spacing = 2
+        valueStack.addArrangedSubview(valueRow)
+        if let captionText = valueCaption(provider, todaySpent: todaySpent), !captionText.isEmpty {
+            let caption = label(captionText, size: 10, color: Theme.secondary)
+            caption.alignment = .right
+            valueStack.addArrangedSubview(caption)
+        }
 
         let header = NSStackView(views: [badge, info, spacer, valueStack])
         header.orientation = .horizontal
@@ -574,9 +591,10 @@ final class ProviderRowView: NSView {
             }
             stack.addArrangedSubview(checkinRow)
             checkinRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        } else if let supporting = provider.metrics.first(where: { $0.kind == "credit" })?.detail
-                    ?? provider.metrics.first(where: { $0.kind == "text" })?.detail,
-                  !supporting.isEmpty {
+        } else if let supporting = compactDetail(
+                    provider.metrics.first(where: { $0.kind == "credit" })?.detail
+                    ?? provider.metrics.first(where: { $0.kind == "text" })?.detail
+                  ) {
             let detailLabel = label(supporting, size: 10, color: Theme.tertiary)
             detailLabel.lineBreakMode = .byTruncatingTail
             stack.addArrangedSubview(detailLabel)
@@ -671,6 +689,20 @@ final class ProviderRowView: NSView {
         layer?.backgroundColor = color.cgColor
     }
 
+    /// 去掉 “赠金 ¥0.00 ·” 这类没有参考价值的零值片段，避免底部一行被零占据。
+    private func compactDetail(_ text: String?) -> String? {
+        guard let text, !text.isEmpty else { return nil }
+        let parts = text
+            .split(separator: "·")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { part in
+                !part.isEmpty
+                && !part.contains("¥0.00")
+                && !part.contains("0.00 元")
+            }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     private func isExhausted(_ provider: ProviderStatus) -> Bool {
         provider.metrics.contains { ($0.remainingPercent ?? 100) <= 20 }
     }
@@ -678,7 +710,7 @@ final class ProviderRowView: NSView {
     private func subtitle(for provider: ProviderStatus) -> String {
         switch provider.status {
         case "ok", "warn":
-            if provider.id == "trae" || provider.id == "workbuddy" { return "积分余额" }
+            if provider.id == "trae" || provider.id == "workbuddy" { return "签到积分" }
             if provider.id == "codex" { return "ChatGPT 订阅" }
             if provider.id == "deepseek" { return "API 余额（按量计费）" }
             return provider.detail ?? "已连接"
@@ -716,19 +748,13 @@ final class ProviderRowView: NSView {
         return "—"
     }
 
-    private func valueCaption(_ provider: ProviderStatus, todaySpent: Double?) -> String {
-        if provider.metrics.contains(where: { $0.kind == "percent" }) { return "" }
-        if provider.metrics.contains(where: { $0.kind == "credit" }) {
-            if let spent = todaySpent, spent > 0.0001 {
-                if provider.id == "deepseek" {
-                    return String(format: "今日 -¥%.2f", spent)
-                }
-                return "今日 -\(Int(spent.rounded()))"
-            }
-            return (provider.id == "workbuddy" || provider.id == "trae") ? "积分" : "余额"
+    private func valueCaption(_ provider: ProviderStatus, todaySpent: Double?) -> String? {
+        guard provider.metrics.contains(where: { $0.kind == "credit" }),
+              let spent = todaySpent, spent > 0.0001 else { return nil }
+        if provider.id == "deepseek" {
+            return String(format: "今日 -¥%.2f", spent)
         }
-        if provider.metrics.contains(where: { $0.kind == "text" }) { return "积分" }
-        return ""
+        return "今日 -\(Int(spent.rounded()))"
     }
 
     private func valueColor(_ provider: ProviderStatus) -> NSColor {
