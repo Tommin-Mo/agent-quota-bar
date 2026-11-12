@@ -114,6 +114,12 @@ extension QuotaSnapshot {
         if let percent = provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent {
             return "p:\(percent)"
         }
+        // Trae / WorkBuddy 的余额会因签到 +100 变化，但 consumed 不会；
+        // 用累计消费判断“最近使用”，避免签到把菜单栏抢过去。
+        if provider.id == "trae" || provider.id == "workbuddy",
+           let consumed = provider.consumed {
+            return "u:\(consumed)"
+        }
         if let credit = provider.metrics.first(where: { $0.kind == "credit" }) {
             return "c:\(credit.headlineValue ?? "")"
         }

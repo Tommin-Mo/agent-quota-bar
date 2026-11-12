@@ -21,8 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var settingsController: SettingsWindowController?
     private var setupControllers: [String: SetupWindowController] = [:]
     private var activeProviderID: String?
-    private var lastSignatures: [String: String] = [:]
+    private var lastUsage: [String: ProviderUsageSnapshot] = [:]
     private var lastSwitchAt = Date.distantPast
+    private var lastMenuBarMode: String?
     private let switchCooldown: TimeInterval = 10
     private var didPopoverSnapshot = false
     private var didStatusSnapshot = false
@@ -473,49 +474,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     /// 自动模式：谁的额度数值刚变化，就切到谁；10 秒冷却避免闪烁。
+    private struct ProviderUsageSnapshot {
+        var percents: [String: Double] = [:]
+        var consumed: Double?
+        var balance: Double?
+    }
+
+    /// 最近使用只看“真的消耗”：used 上升、consumed 增加、余额下降。
+    /// 窗口重置、签到 +100、充值上涨都不算使用。
+    private func detectUsage(_ provider: ProviderStatus) -> Bool {
+        var current = ProviderUsageSnapshot()
+        current.percents = Dictionary(uniqueKeysWithValues: provider.metrics.compactMap { metric in
+            guard metric.kind == "percent", let used = metric.usedPercent else { return nil }
+            return (metric.label, used)
+        })
+        current.consumed = provider.consumed
+        current.balance = provider.balance
+
+        defer { lastUsage[provider.id] = current }
+        guard let previous = lastUsage[provider.id] else { return false }
+
+        for (label, used) in current.percents {
+            if let old = previous.percents[label], used > old + 0.0001 {
+                return true
+            }
+        }
+        if let consumed = current.consumed, let old = previous.consumed, consumed > old + 0.0001 {
+            return true
+        }
+        if let balance = current.balance, let old = previous.balance, balance < old - 0.0001 {
+            return true
+        }
+        return false
+    }
+
     private func updateActiveProvider(snapshot: QuotaSnapshot, mode: String) {
         let candidates = snapshot.providers.filter { $0.status != "disabled" }
-        var signatures: [String: String] = [:]
-        for provider in candidates {
-            signatures[provider.id] = snapshot.signature(for: provider)
+
+        if lastMenuBarMode != mode {
+            lastMenuBarMode = mode
+            if mode == "auto" {
+                activeProviderID = nil
+                lastUsage.removeAll()
+                lastSwitchAt = .distantPast
+            }
         }
 
         if mode == "fixed" {
             let fixed = service.config.string("menuBarProvider", default: "auto")
             if snapshot.provider(withID: fixed) != nil {
                 activeProviderID = fixed
-                lastSignatures = signatures
                 return
             }
         }
 
-        var changed: [String] = []
+        let now = Date()
+        var usedProviders: [String] = []
         for provider in candidates where provider.isUsable {
-            if let old = lastSignatures[provider.id], old != signatures[provider.id] {
-                changed.append(provider.id)
+            if detectUsage(provider) {
+                usedProviders.append(provider.id)
             }
         }
 
-        let now = Date()
-        if !changed.isEmpty, now.timeIntervalSince(lastSwitchAt) >= switchCooldown {
-            if let current = activeProviderID, changed.contains(current) {
-                // 当前这家自己变了，保持不动
-            } else {
-                activeProviderID = changed.first
-                lastSwitchAt = now
-            }
+        if mode == "auto", let newest = usedProviders.first,
+           now.timeIntervalSince(lastSwitchAt) >= switchCooldown {
+            activeProviderID = newest
+            lastSwitchAt = now
         }
 
         if activeProviderID == nil || snapshot.provider(withID: activeProviderID!) == nil {
-            activeProviderID = snapshot.worstProviderID()
+            let configured = service.config.string("menuBarProvider", default: "auto")
+            if configured != "auto", snapshot.provider(withID: configured) != nil {
+                activeProviderID = configured
+            } else {
+                activeProviderID = snapshot.worstProviderID()
+            }
         }
         if let id = activeProviderID,
            let provider = snapshot.provider(withID: id),
            provider.status == "error" || provider.status == "unconfigured" {
             activeProviderID = snapshot.worstProviderID()
         }
-
-        lastSignatures = signatures
     }
 
     @objc private func statusItemClicked() {
