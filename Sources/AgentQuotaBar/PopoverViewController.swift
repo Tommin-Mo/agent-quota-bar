@@ -24,13 +24,9 @@ final class QuotaPopoverViewController: NSViewController {
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let rowsStack = NSStackView()
     private let footerLabel = NSTextField(labelWithString: "")
-    private let summaryCard = NSView()
     private let headerActions = NSStackView()
     private let themeButton = HeaderIconButton(symbol: "moon")
     private let checkinButton = HeaderIconButton(symbol: "checkmark.circle")
-    private var summaryService = NSTextField(labelWithString: "—")
-    private var summaryLowest = NSTextField(labelWithString: "—")
-    private var summaryCheckin = NSTextField(labelWithString: "待签")
     private var checkinDone = false
     private var checkinDetailText = ""
     private var checkinRunning = false
@@ -38,8 +34,14 @@ final class QuotaPopoverViewController: NSViewController {
     private var lastError: String?
     private var lastRefreshing = false
     private var lastOffline = false
+    private var lastReportedPreferredSize: NSSize = .zero
     private let spinner = NSProgressIndicator()
     private var draggingRow: ProviderRowView?
+
+    /// NSPopover 不会持续跟随 preferredContentSize；AppDelegate 可消费此回调/通知，
+    /// 在面板已展开且内容高度变化时同步 popover.contentSize。
+    var onPreferredContentSizeChange: ((NSSize) -> Void)?
+    static let preferredContentSizeChanged = Notification.Name("AgentQuotaBar.popoverPreferredSizeChanged")
 
     init(service: QuotaService) {
         self.service = service
@@ -82,11 +84,12 @@ final class QuotaPopoverViewController: NSViewController {
         themeButton.target = self
         themeButton.action = #selector(themeTapped)
         themeButton.toolTip = "切换明暗"
+        themeButton.setIconAccessibilityLabel("切换明暗外观")
 
         checkinButton.target = self
         checkinButton.action = #selector(checkinTapped)
         checkinButton.toolTip = "一键签到 Trae + WorkBuddy"
-        checkinButton.setAccessibilityLabel("一键签到 Trae 和 WorkBuddy")
+        checkinButton.setIconAccessibilityLabel("一键签到 Trae 和 WorkBuddy")
 
         let refresh = iconButton("arrow.clockwise", tooltip: "立即刷新", action: #selector(refreshTapped))
         let gear = iconButton("gearshape", tooltip: "设置", action: #selector(settingsTapped))
@@ -112,38 +115,6 @@ final class QuotaPopoverViewController: NSViewController {
         header.alignment = .centerY
         header.spacing = 8
         header.translatesAutoresizingMaskIntoConstraints = false
-
-        summaryService = label("—", size: 14, weight: .semibold, color: .labelColor, monospaced: true)
-        summaryLowest = label("—", size: 14, weight: .semibold, color: .labelColor, monospaced: true)
-        summaryCheckin = label("待签", size: 14, weight: .semibold, color: .labelColor)
-
-        let stats = NSStackView(views: [
-            summaryStat("服务", value: summaryService),
-            summaryStat("最低额度", value: summaryLowest),
-            summaryStat("签到", value: summaryCheckin),
-        ])
-        stats.orientation = .horizontal
-        stats.distribution = .fillEqually
-        stats.alignment = .centerY
-        stats.spacing = 0
-        stats.translatesAutoresizingMaskIntoConstraints = false
-
-        summaryCard.wantsLayer = true
-        summaryCard.layer?.backgroundColor = Theme.surfaceAlt.resolvedCGColor()
-        summaryCard.layer?.cornerRadius = 10
-        summaryCard.layer?.cornerCurve = .continuous
-        summaryCard.layer?.borderWidth = 1
-        summaryCard.layer?.borderColor = Theme.separator.resolvedCGColor()
-        headerActions.layer?.backgroundColor = Theme.surfaceAlt.resolvedCGColor()
-        headerActions.layer?.borderColor = Theme.separator.resolvedCGColor()
-        summaryCard.translatesAutoresizingMaskIntoConstraints = false
-        summaryCard.addSubview(stats)
-        NSLayoutConstraint.activate([
-            stats.topAnchor.constraint(equalTo: summaryCard.topAnchor, constant: 8),
-            stats.bottomAnchor.constraint(equalTo: summaryCard.bottomAnchor, constant: -8),
-            stats.leadingAnchor.constraint(equalTo: summaryCard.leadingAnchor, constant: 12),
-            stats.trailingAnchor.constraint(equalTo: summaryCard.trailingAnchor, constant: -12),
-        ])
 
         rowsStack.orientation = .vertical
         rowsStack.alignment = .leading
@@ -206,35 +177,6 @@ final class QuotaPopoverViewController: NSViewController {
         node.subviews.forEach { applyAppearanceRecursively(to: $0) }
     }
 
-    private func setThemedColor(_ field: NSTextField, _ color: NSColor) {
-        if let themed = field as? ThemedLabel {
-            themed.applyRole(color)
-        } else {
-            field.textColor = color.resolvedForAppearance()
-        }
-    }
-
-    private func summaryStat(_ title: String, value: NSTextField) -> NSView {
-        let titleLabel = label(title, size: 10, weight: .medium, color: Theme.tertiary)
-        titleLabel.alignment = .center
-        value.alignment = .center
-        let stack = NSStackView(views: [titleLabel, value])
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 0
-        return stack
-    }
-
-    private func summaryDivider() -> NSView {
-        let line = NSView()
-        line.wantsLayer = true
-        line.layer?.backgroundColor = Theme.separator.resolvedCGColor()
-        line.translatesAutoresizingMaskIntoConstraints = false
-        line.widthAnchor.constraint(equalToConstant: 1).isActive = true
-        line.heightAnchor.constraint(equalToConstant: 22).isActive = true
-        return line
-    }
-
     func refreshAppearance() {
         if let target = NSApp.appearance {
             if view.window?.appearance?.name != target.name {
@@ -253,8 +195,6 @@ final class QuotaPopoverViewController: NSViewController {
         }
         applyAppearanceRecursively(to: view)
         root.layer?.backgroundColor = Theme.background.resolvedCGColor()
-        summaryCard.layer?.backgroundColor = Theme.surfaceAlt.resolvedCGColor()
-        summaryCard.layer?.borderColor = Theme.separator.resolvedCGColor()
         headerActions.layer?.backgroundColor = Theme.surfaceAlt.resolvedCGColor()
         headerActions.layer?.borderColor = Theme.separator.resolvedCGColor()
         titleLabel.textColor = .labelColor.resolvedForAppearance()
@@ -272,8 +212,6 @@ final class QuotaPopoverViewController: NSViewController {
         // 两个都签完就自动隐藏；运行中保留但禁用，避免重复点击。
         checkinButton.isHidden = done
         checkinButton.isEnabled = !running
-        summaryCheckin.stringValue = done ? "已签" : (running ? "签到中" : "待签")
-        setThemedColor(summaryCheckin, done ? QuotaStyle.healthyColor : .labelColor)
         if let snapshot = lastSnapshot {
             update(
                 snapshot: snapshot,
@@ -315,10 +253,6 @@ final class QuotaPopoverViewController: NSViewController {
                 rowsStack.addArrangedSubview(label)
                 label.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
             }
-            summaryService.stringValue = "—"
-            summaryLowest.stringValue = "—"
-            summaryCheckin.stringValue = checkinDone ? "已签" : "待签"
-            setThemedColor(summaryCheckin, checkinDone ? QuotaStyle.healthyColor : .labelColor)
             if isOffline {
                 footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
                 footerLabel.textColor = .systemOrange
@@ -356,24 +290,6 @@ final class QuotaPopoverViewController: NSViewController {
         subtitleLabel.stringValue = isOffline
             ? "网络未连接 · 显示 \(timeText(snapshot.updatedDate)) 的数据"
             : "\(snapshot.usableCount)/\(snapshot.enabledCount) 个服务 · \(timeText(snapshot.updatedDate))"
-
-        let percents = snapshot.providers.compactMap { provider in
-            provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent
-        }
-        summaryService.stringValue = "\(snapshot.usableCount)/\(snapshot.enabledCount)"
-        setThemedColor(summaryService, .labelColor)
-        if let lowest = percents.min() {
-            summaryLowest.stringValue = "\(Int(lowest.rounded()))%"
-            setThemedColor(
-                summaryLowest,
-                lowest <= 45 ? QuotaSeverity.from(remaining: lowest).color : .labelColor
-            )
-        } else {
-            summaryLowest.stringValue = "—"
-            setThemedColor(summaryLowest, .labelColor)
-        }
-        summaryCheckin.stringValue = checkinDone ? "已签" : (checkinRunning ? "签到中" : "待签")
-        setThemedColor(summaryCheckin, checkinDone ? QuotaStyle.healthyColor : .labelColor)
 
         if isOffline {
             footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
@@ -421,8 +337,20 @@ final class QuotaPopoverViewController: NSViewController {
         let rowsHeight = rowsStack.fittingSize.height
         // 顶部 14 + header 约 31 + 间距 12 + rows + 间距 8 + footer 约 16 + 底部 10
         let height = min(840, max(160, rowsHeight + 92))
-        preferredContentSize = NSSize(width: 380, height: height)
-        view.setFrameSize(preferredContentSize)
+        let size = NSSize(width: 380, height: height)
+        preferredContentSize = size
+        view.invalidateIntrinsicContentSize()
+        view.setFrameSize(size)
+        // NSPopover 在 show 之后不会持续同步 preferredContentSize，这里主动通知一次。
+        if abs(size.height - lastReportedPreferredSize.height) > 0.5 {
+            lastReportedPreferredSize = size
+            onPreferredContentSizeChange?(size)
+            NotificationCenter.default.post(
+                name: Self.preferredContentSizeChanged,
+                object: self,
+                userInfo: ["size": NSValue(size: size)]
+            )
+        }
     }
 
     private func timeText(_ date: Date?) -> String {
@@ -437,6 +365,7 @@ final class QuotaPopoverViewController: NSViewController {
         button.target = self
         button.action = action
         button.toolTip = tooltip
+        button.setIconAccessibilityLabel(tooltip)
         return button
     }
 
@@ -878,9 +807,16 @@ final class HeaderIconButton: NSButton {
 
     private func applySymbol() {
         let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
+        let description = accessibilityLabel() ?? toolTip
+        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)?
             .withSymbolConfiguration(config)
         contentTintColor = Theme.secondary
+    }
+
+    /// 供调用方在设置 tooltip/label 后刷新图像的无障碍描述。
+    func setIconAccessibilityLabel(_ value: String) {
+        setAccessibilityLabel(value)
+        applySymbol()
     }
 
     override func updateTrackingAreas() {

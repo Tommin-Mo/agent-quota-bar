@@ -5,6 +5,8 @@ import Foundation
 struct QuotaSnapshot: Codable {
     let schema: Int?
     let updatedAt: String
+    /// 开始采集的时间；比 updatedAt 更接近各家数据的实际读取时间，用于跨进程排序。
+    let sampledAt: String?
     let providers: [ProviderStatus]
 
     var updatedDate: Date? {
@@ -98,6 +100,7 @@ extension QuotaSnapshot {
         return QuotaSnapshot(
             schema: schema,
             updatedAt: updatedAt,
+            sampledAt: sampledAt,
             providers: providers.filter { !ids.contains($0.id) }
         )
     }

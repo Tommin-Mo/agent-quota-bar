@@ -49,7 +49,13 @@ final class CheckinService {
         return "每日 \(String(format: "%02d:00", scheduledHour)) 自动签到"
     }
 
+    /// 后台 LaunchAgent 也会签到并写配置；定时判断前先把磁盘状态读回来。
+    func refreshFromDisk() {
+        config.reload()
+    }
+
     func runIfNeeded() {
+        config.reload()
         guard isAutoEnabled, !running, !hasCheckedInToday else { return }
         let hour = Calendar.current.component(.hour, from: Date())
         guard hour >= scheduledHour else { return }

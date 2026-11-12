@@ -8,6 +8,12 @@ enum Theme {
         NSApp.appearance ?? NSApp.effectiveAppearance
     }
 
+    /// 判断指定外观是否为深色；绘制菜单栏图标时传当前绘制外观。
+    static func isDark(_ appearance: NSAppearance? = nil) -> Bool {
+        let target = appearance ?? currentAppearance
+        return target.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
     static func hex(_ value: UInt32) -> NSColor {
         NSColor(
             srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
@@ -41,6 +47,38 @@ enum Theme {
     static let tile = dynamic(hex(0x152029), hex(0x111A21))
 }
 
+
+/// 记录“语义色角色”的视图：外观变化时重新解析 CALayer 颜色。
+/// CALayer 的 backgroundColor / borderColor 是静态 CGColor，一旦写入就不会跟随外观。
+final class ThemedSurfaceView: NSView {
+    var surfaceColor: NSColor? {
+        didSet { applySurface() }
+    }
+    var surfaceBorderColor: NSColor? {
+        didSet { applySurface() }
+    }
+    var surfaceBorderWidth: CGFloat = 0 {
+        didSet { applySurface() }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applySurface()
+    }
+
+    func applySurface() {
+        guard wantsLayer else { return }
+        // 显式外观优先（NSApp.appearance），避免 effectiveAppearance 晚一拍。
+        let appearance = Theme.currentAppearance
+        if let surfaceColor {
+            layer?.backgroundColor = surfaceColor.resolvedForAppearance(appearance).cgColor
+        }
+        if let surfaceBorderColor {
+            layer?.borderColor = surfaceBorderColor.resolvedForAppearance(appearance).cgColor
+            layer?.borderWidth = surfaceBorderWidth
+        }
+    }
+}
 
 extension NSColor {
     /// 在 app 当前外观下解析动态色，再转 CGColor；避免重建 UI 时拿到旧外观的颜色。

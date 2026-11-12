@@ -3,17 +3,23 @@ import Foundation
 /// 今日实际消费：
 /// - DeepSeek：相邻两次余额的下降额累加，覆盖外部调用；充值/赠金上涨不计。
 /// - Trae / WorkBuddy：累计消费计数器 - 当天 0 点基线；签到与充值不影响累计消费。
+///
+/// App 的 60s 轮询与 LaunchAgent 的 5 分钟采样会并发运行，采集结果可能乱序到达。
+/// 每份 provider 状态都记录快照的 `updatedAt`，只接受比已记录更新的快照，
+/// 避免旧快照把余额“倒回去”再算一次，造成重复计费。
 final class UsageTracker {
     static let shared = UsageTracker()
 
     private struct DeepSeekState: Codable {
         var lastBalance: Double
         var spent: Double
+        var updatedAt: String?
     }
 
     private struct ConsumedState: Codable {
         var baseline: Double
         var spent: Double
+        var updatedAt: String?
     }
 
     private struct State: Codable {
@@ -28,8 +34,15 @@ final class UsageTracker {
     private var state: State
 
     private init() {
-        let directory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/agent-quota", isDirectory: true)
+        let directory: URL
+        if let custom = ProcessInfo.processInfo.environment["AGENT_QUOTA_CONFIG"] {
+            // 与 ConfigStore 使用同一个目录，便于应用/LaunchAgent/测试共用同一份状态。
+            directory = URL(fileURLWithPath: (custom as NSString).expandingTildeInPath)
+                .deletingLastPathComponent()
+        } else {
+            directory = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/agent-quota", isDirectory: true)
+        }
         fileURL = directory.appendingPathComponent("usage.json")
         lock = NSDistributedLock(path: fileURL.path + ".lock")
         if let data = try? Data(contentsOf: fileURL),
@@ -41,7 +54,7 @@ final class UsageTracker {
         }
     }
 
-    func record(snapshot: QuotaSnapshot) {
+    func record(snapshot: QuotaSnapshot, only: Set<String>? = nil) {
         guard let lock else { return }
         var acquired = false
         for _ in 0..<100 {
@@ -53,37 +66,46 @@ final class UsageTracker {
         reloadState()
 
         if state.day != Self.dayKey {
+            // 跨天：清空基线重新开始。
             state = State(day: Self.dayKey, deepseek: nil, trae: nil, workbuddy: nil)
         }
 
-        if let deepseek = snapshot.providers.first(where: { $0.id == "deepseek" }),
+        let stamp = snapshot.sampledAt ?? snapshot.updatedAt
+
+        if (only == nil || only!.contains("deepseek")),
+           let deepseek = snapshot.providers.first(where: { $0.id == "deepseek" }),
            let balance = deepseek.balance {
             if var current = state.deepseek {
-                if balance < current.lastBalance {
-                    current.spent += current.lastBalance - balance
+                if Self.isNewer(stamp, than: current.updatedAt) {
+                    if balance < current.lastBalance {
+                        current.spent += current.lastBalance - balance
+                    }
+                    current.lastBalance = balance
+                    current.updatedAt = stamp
+                    state.deepseek = current
                 }
-                current.lastBalance = balance
-                state.deepseek = current
             } else {
-                state.deepseek = DeepSeekState(lastBalance: balance, spent: 0)
+                state.deepseek = DeepSeekState(lastBalance: balance, spent: 0, updatedAt: stamp)
             }
         }
 
         for id in ["trae", "workbuddy"] {
-            guard let provider = snapshot.providers.first(where: { $0.id == id }),
+            guard only == nil || only!.contains(id),
+                  let provider = snapshot.providers.first(where: { $0.id == id }),
                   let consumed = provider.consumed else { continue }
             let keyPath = id == "trae" ? \State.trae : \State.workbuddy
             if var current = state[keyPath: keyPath] {
+                guard Self.isNewer(stamp, than: current.updatedAt) else { continue }
                 if consumed < current.baseline {
-                    // 套餐周期重置：重新建立基线，今天的消耗从当前开始。
+                    // 套餐周期重置/过期套餐被移除：只重建基线，保留今天已经记录的消耗。
                     current.baseline = consumed
-                    current.spent = 0
                 } else {
                     current.spent = max(0, consumed - current.baseline)
                 }
+                current.updatedAt = stamp
                 state[keyPath: keyPath] = current
             } else {
-                state[keyPath: keyPath] = ConsumedState(baseline: consumed, spent: 0)
+                state[keyPath: keyPath] = ConsumedState(baseline: consumed, spent: 0, updatedAt: stamp)
             }
         }
 
@@ -101,6 +123,19 @@ final class UsageTracker {
         }
     }
 
+    // MARK: - 快照顺序判断
+
+    /// 新快照的 `updatedAt` 是否严格晚于已记录的时间。
+    /// 两个时间都能解析时按时间比较；否则退化为 ISO8601 字符串的字典序（同格式下等价）。
+    private static func isNewer(_ incoming: String, than stored: String?) -> Bool {
+        guard let stored else { return true }
+        if let new = ISO8601DateFormatter.flexible.date(from: incoming),
+           let old = ISO8601DateFormatter.flexible.date(from: stored) {
+            return new > old
+        }
+        return incoming > stored
+    }
+
     private func reloadState() {
         guard let data = try? Data(contentsOf: fileURL),
               let loaded = try? JSONDecoder().decode(State.self, from: data)
@@ -112,6 +147,10 @@ final class UsageTracker {
 
     private func save() {
         guard let data = try? JSONEncoder().encode(state) else { return }
+        try? FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         try? data.write(to: fileURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }

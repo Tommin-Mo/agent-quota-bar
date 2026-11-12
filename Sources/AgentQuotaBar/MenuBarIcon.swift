@@ -13,7 +13,8 @@ enum MenuBarIcon {
         remaining: Double?,
         severity: QuotaSeverity,
         scale: CGFloat = 1.25,
-        ink: NSColor = .white
+        ink: NSColor? = nil,
+        fixedInk: Bool = false
     ) -> NSImage {
         let s = max(0.8, min(1.6, scale))
         let logoSize = baseLogo * s
@@ -21,8 +22,9 @@ enum MenuBarIcon {
         let drawsRing = remaining != nil || severity == .critical
         let gap = (drawsRing ? baseGap : 2) * s
         let font = NSFont.monospacedDigitSystemFont(ofSize: 10 * s, weight: .medium)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
-        let textSize = drawsRing ? .zero : (value as NSString).size(withAttributes: attrs)
+        // 文字宽度只取决于字体，与最终墨色无关。
+        let measureAttrs: [NSAttributedString.Key: Any] = [.font: font]
+        let textSize = drawsRing ? .zero : (value as NSString).size(withAttributes: measureAttrs)
         let height = max(logoSize, ringSize) + 2
         // 圆环不留白；积分/余额数字与 logo 居中对齐，只留很小的左右边距，避免贴隔壁图标。
         let padLeft: CGFloat = drawsRing ? 0 : 4 * s
@@ -31,18 +33,28 @@ enum MenuBarIcon {
         let width = padLeft + contentWidth + padRight
 
         let image = NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
-            let shadow = NSShadow()
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.55)
-            shadow.shadowBlurRadius = 1.4
-            shadow.shadowOffset = NSSize(width: 0, height: -0.5)
-            shadow.set()
+            // 在真正绘制时解析外观：状态栏按钮会把自己的外观（浅色/深色菜单栏）
+            // 设为当前绘制外观，这与 app 自身强制的外观无关。
+            let resolvedInk = Self.resolvedInk(ink, fixed: fixedInk)
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: resolvedInk]
+
+            // 浅色菜单栏改用深色墨，深色投影会糊；深色菜单栏保留原来的白色 + 投影效果。
+            if Self.isBright(resolvedInk) {
+                let shadow = NSShadow()
+                shadow.shadowColor = NSColor.black.withAlphaComponent(0.55)
+                shadow.shadowBlurRadius = 1.4
+                shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+                shadow.set()
+            } else {
+                NSGraphicsContext.current?.cgContext.setShadow(offset: .zero, blur: 0, color: nil)
+            }
 
             let logoRect = NSRect(x: padLeft, y: (height - logoSize) / 2, width: logoSize, height: logoSize)
-            drawLogo(provider: provider, in: logoRect, ink: ink)
+            drawLogo(provider: provider, in: logoRect, ink: resolvedInk)
 
             if drawsRing {
                 let ringRect = NSRect(x: padLeft + logoSize + gap, y: (height - ringSize) / 2, width: ringSize, height: ringSize)
-                drawRing(in: ringRect, value: value, remaining: remaining, severity: severity, ink: ink, scale: s)
+                drawRing(in: ringRect, value: value, remaining: remaining, severity: severity, ink: resolvedInk, scale: s)
             } else {
                 NSGraphicsContext.current?.cgContext.setShadow(offset: .zero, blur: 0, color: nil)
                 let origin = NSPoint(
@@ -55,6 +67,25 @@ enum MenuBarIcon {
         }
         image.isTemplate = false
         return image
+    }
+
+    /// 菜单栏墨色：
+    /// - 深色菜单栏保持调用方给的白色（现有观感）。
+    /// - 浅色菜单栏把“亮墨”换成深色，否则白字/白 logo 不可见。
+    /// - `fixedInk` 用于设置里的深色预览底，不参与自适应。
+    private static func resolvedInk(_ requested: NSColor?, fixed: Bool) -> NSColor {
+        let base = requested ?? .white
+        // 菜单栏跟随系统外观，而不是 App 内强制的外观。
+        // 用 NSAppearance.currentDrawing() / status button.effectiveAppearance 会被
+        // App 的“浅色/深色”设置带偏，导致系统深色菜单栏上出现黑图标。
+        let systemIsDark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+        guard !fixed, !systemIsDark else { return base }
+        return isBright(base) ? Theme.hex(0x111A1F) : base
+    }
+
+    private static func isBright(_ color: NSColor) -> Bool {
+        guard let srgb = color.usingColorSpace(.sRGB) else { return true }
+        return srgb.brightnessComponent > 0.8
     }
 
     // MARK: - Logo

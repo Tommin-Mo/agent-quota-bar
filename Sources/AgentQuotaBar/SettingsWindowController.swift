@@ -1,5 +1,9 @@
 import AppKit
 
+private var appVersionText: String {
+    "v" + ((Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.4")
+}
+
 /// 玻璃面板：NSVisualEffectView + 高光边，接近 Liquid Glass 的层次。
 func makeGlassPanel(cornerRadius: CGFloat, material: NSVisualEffectView.Material = .hudWindow) -> NSVisualEffectView {
     let view = NSVisualEffectView()
@@ -27,15 +31,25 @@ func makeGlassPanel(cornerRadius: CGFloat, material: NSVisualEffectView.Material
 }
 
 final class AccentButton: NSButton {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
         let path = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
         let fill = isHighlighted ? Theme.accent.blended(withFraction: 0.12, of: .black) ?? Theme.accent : Theme.accent
         fill.setFill()
         path.fill()
+        // 深色外观的 accent 是亮青色，白字对比不足；改用深色文字保持可读。
+        let dark = Theme.isDark(effectiveAppearance)
+        let titleColor = dark
+            ? Theme.background.resolvedForAppearance(effectiveAppearance)
+            : NSColor.white
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font ?? .systemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: NSColor.white,
+            .foregroundColor: titleColor,
         ]
         let size = (title as NSString).size(withAttributes: attrs)
         (title as NSString).draw(
@@ -61,6 +75,42 @@ final class AccentSwitch: NSControl {
 
     override var intrinsicContentSize: NSSize { NSSize(width: 38, height: 22) }
 
+    override var acceptsFirstResponder: Bool { true }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        focusRingType = .exterior
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        needsDisplay = true
+        return true
+    }
+
+    override func resignFirstResponder() -> Bool {
+        needsDisplay = true
+        return true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 49 || event.charactersIgnoringModifiers == " " {
+            isOn.toggle()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    override var focusRingMaskBounds: NSRect { bounds }
+
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10).fill()
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let track = NSRect(x: 1, y: 3, width: 36, height: 16)
         let path = NSBezierPath(roundedRect: track, xRadius: 8, yRadius: 8)
@@ -75,6 +125,7 @@ final class AccentSwitch: NSControl {
     }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
         isOn.toggle()
     }
 
@@ -132,6 +183,11 @@ final class SidebarButton: NSButton {
         applyStyle()
     }
 
+    func refreshAppearance() {
+        applyStyle()
+        needsDisplay = true
+    }
+
     private func applyStyle() {
         if selected {
             layer?.backgroundColor = Theme.accent.withAlphaComponent(0.13).cgColor
@@ -187,7 +243,7 @@ final class SettingsWindowController: NSWindowController {
     private var pageViews: [NSView] = []
     private var navButtons: [SidebarButton] = []
     private var selectedPage = 0
-    private var providerStatusViews: [String: (dot: NSView, text: NSTextField)] = [:]
+    private var providerStatusViews: [String: (dot: ThemedSurfaceView, text: NSTextField)] = [:]
     private var visibilitySwitches: [String: AccentSwitch] = [:]
     private var checkinDetailStatusLabels: [String: NSTextField] = [:]
 
@@ -244,26 +300,26 @@ final class SettingsWindowController: NSWindowController {
         }
         contentStack.removeFromSuperview()
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 780, height: 680))
+        let container = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 780, height: 680))
         container.wantsLayer = true
-        container.layer?.backgroundColor = Theme.background.resolvedCGColor()
+        container.surfaceColor = Theme.background
 
-        let topBar = NSView()
+        let topBar = ThemedSurfaceView()
         topBar.wantsLayer = true
-        topBar.layer?.backgroundColor = Theme.background.resolvedCGColor()
+        topBar.surfaceColor = Theme.background
         topBar.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(topBar)
         buildTopBar(in: topBar)
 
-        let saveBar = NSView()
+        let saveBar = ThemedSurfaceView()
         saveBar.wantsLayer = true
-        saveBar.layer?.backgroundColor = Theme.background.resolvedCGColor()
+        saveBar.surfaceColor = Theme.background
         saveBar.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(saveBar)
 
-        let saveBarLine = NSView()
+        let saveBarLine = ThemedSurfaceView()
         saveBarLine.wantsLayer = true
-        saveBarLine.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        saveBarLine.surfaceColor = NSColor.separatorColor.withAlphaComponent(0.35)
         saveBarLine.translatesAutoresizingMaskIntoConstraints = false
         saveBar.addSubview(saveBarLine)
 
@@ -346,7 +402,7 @@ final class SettingsWindowController: NSWindowController {
         mark.heightAnchor.constraint(equalToConstant: 28).isActive = true
 
         let title = label("Agent 额度", size: 17, weight: .semibold)
-        let subtitle = label("v0.4", size: 10.5, color: Theme.tertiary)
+        let subtitle = label(appVersionText, size: 10.5, color: Theme.tertiary)
         let titles = NSStackView(views: [title, subtitle])
         titles.orientation = .vertical
         titles.alignment = .leading
@@ -387,9 +443,9 @@ final class SettingsWindowController: NSWindowController {
             navButtons.append(button)
         }
 
-        let line = NSView()
+        let line = ThemedSurfaceView()
         line.wantsLayer = true
-        line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        line.surfaceColor = NSColor.separatorColor.withAlphaComponent(0.35)
         line.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(line)
 
@@ -417,7 +473,7 @@ final class SettingsWindowController: NSWindowController {
         mark.heightAnchor.constraint(equalToConstant: 28).isActive = true
 
         let title = label("Agent 额度", size: 17, weight: .semibold)
-        let subtitle = label("v0.4", size: 10.5, color: Theme.tertiary)
+        let subtitle = label(appVersionText, size: 10.5, color: Theme.tertiary)
         let titles = NSStackView(views: [title, subtitle])
         titles.orientation = .vertical
         titles.alignment = .leading
@@ -457,7 +513,7 @@ final class SettingsWindowController: NSWindowController {
         let background = label("后台签到 · 已启用", size: 10, weight: .medium, color: Theme.success)
         background.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(background)
-        let version = label("v0.4", size: 10, color: Theme.tertiary)
+        let version = label(appVersionText, size: 10, color: Theme.tertiary)
         version.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(version)
 
@@ -485,6 +541,7 @@ final class SettingsWindowController: NSWindowController {
 
         hintLabel.font = .systemFont(ofSize: 10.5)
         hintLabel.textColor = Theme.secondary
+        hintLabel.setAccessibilityLabel("保存状态")
 
         let save = AccentButton(title: "保存", target: self, action: #selector(save))
         save.isBordered = false
@@ -530,18 +587,22 @@ final class SettingsWindowController: NSWindowController {
             refreshPopup.lastItem?.representedObject = seconds
         }
         refreshPopup.font = .systemFont(ofSize: 12)
+        refreshPopup.setAccessibilityLabel("刷新频率")
         refreshPopup.translatesAutoresizingMaskIntoConstraints = false
         refreshPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
 
         proxyField.font = .systemFont(ofSize: 12)
         proxyField.placeholderString = "auto"
+        proxyField.setAccessibilityLabel("系统代理")
         proxyField.translatesAutoresizingMaskIntoConstraints = false
         proxyField.widthAnchor.constraint(equalToConstant: 260).isActive = true
 
         loginSwitch.target = self
         loginSwitch.action = #selector(loginSwitchChanged)
+        loginSwitch.setAccessibilityLabel("开机自启动")
         loginStatusLabel.font = .systemFont(ofSize: 10)
         loginStatusLabel.textColor = Theme.tertiary
+        loginStatusLabel.setAccessibilityLabel("开机自启动状态")
 
         let loginColumn = NSStackView(views: [loginSwitch, loginStatusLabel])
         loginColumn.orientation = .vertical
@@ -562,12 +623,14 @@ final class SettingsWindowController: NSWindowController {
         }()
         appearanceControl.target = self
         appearanceControl.action = #selector(appearanceChanged)
+        appearanceControl.setAccessibilityLabel("外观")
         appearanceControl.translatesAutoresizingMaskIntoConstraints = false
         appearanceControl.widthAnchor.constraint(equalToConstant: 260).isActive = true
 
         checkinSwitch.isOn = checkin.isAutoEnabled
         checkinSwitch.target = self
         checkinSwitch.action = #selector(checkinAutoChanged)
+        checkinSwitch.setAccessibilityLabel("自动签到")
         checkinSwitch.translatesAutoresizingMaskIntoConstraints = false
 
         checkinHourPopup.removeAllItems()
@@ -579,11 +642,13 @@ final class SettingsWindowController: NSWindowController {
         checkinHourPopup.font = .systemFont(ofSize: 12)
         checkinHourPopup.target = self
         checkinHourPopup.action = #selector(checkinHourChanged)
+        checkinHourPopup.setAccessibilityLabel("签到时间")
         checkinHourPopup.translatesAutoresizingMaskIntoConstraints = false
         checkinHourPopup.widthAnchor.constraint(equalToConstant: 120).isActive = true
 
         checkinStatusLabel.font = .systemFont(ofSize: 10)
         checkinStatusLabel.textColor = Theme.tertiary
+        checkinStatusLabel.setAccessibilityLabel("签到状态")
         checkinButton.bezelStyle = .inline
         checkinButton.isBordered = false
         checkinButton.font = .systemFont(ofSize: 10.5, weight: .medium)
@@ -738,6 +803,7 @@ final class SettingsWindowController: NSWindowController {
         menuBarModePopup.font = .systemFont(ofSize: 12)
         menuBarModePopup.target = self
         menuBarModePopup.action = #selector(menuBarModeChanged)
+        menuBarModePopup.setAccessibilityLabel("菜单栏显示方式")
         menuBarModePopup.translatesAutoresizingMaskIntoConstraints = false
         menuBarModePopup.widthAnchor.constraint(equalToConstant: 250).isActive = true
 
@@ -747,6 +813,7 @@ final class SettingsWindowController: NSWindowController {
             fixedProviderPopup.lastItem?.representedObject = id
         }
         fixedProviderPopup.font = .systemFont(ofSize: 12)
+        fixedProviderPopup.setAccessibilityLabel("固定显示的服务")
         fixedProviderPopup.translatesAutoresizingMaskIntoConstraints = false
         fixedProviderPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
 
@@ -757,6 +824,7 @@ final class SettingsWindowController: NSWindowController {
         scaleSlider.trackFillColor = Theme.accent.resolvedForAppearance()
         scaleSlider.target = self
         scaleSlider.action = #selector(scaleChanged)
+        scaleSlider.setAccessibilityLabel("菜单栏图标大小")
         scaleSlider.translatesAutoresizingMaskIntoConstraints = false
         scaleSlider.widthAnchor.constraint(equalToConstant: 300).isActive = true
 
@@ -844,19 +912,21 @@ final class SettingsWindowController: NSWindowController {
             well.tag = index
             well.target = self
             well.action = #selector(colorChanged(_:))
+            well.setAccessibilityLabel(["充足颜色", "警戒颜色", "危险颜色"][index])
             well.translatesAutoresizingMaskIntoConstraints = false
             well.widthAnchor.constraint(equalToConstant: 44).isActive = true
             well.heightAnchor.constraint(equalToConstant: 24).isActive = true
             colorWells.append(well)
         }
 
-        for slider in [warningSlider, dangerSlider] {
+        for (label, slider) in [("警戒阈值", warningSlider), ("危险阈值", dangerSlider)] {
             slider.minValue = 1
             slider.maxValue = 99
             slider.isContinuous = false
             slider.trackFillColor = Theme.accent.resolvedForAppearance()
             slider.target = self
             slider.action = #selector(thresholdChanged)
+            slider.setAccessibilityLabel(label)
             slider.translatesAutoresizingMaskIntoConstraints = false
             slider.widthAnchor.constraint(equalToConstant: 260).isActive = true
         }
@@ -887,11 +957,13 @@ final class SettingsWindowController: NSWindowController {
         notifySwitch.isOn = service.config.bool("notifications.enabled", default: false)
         notifySwitch.target = self
         notifySwitch.action = #selector(notificationToggled)
+        notifySwitch.setAccessibilityLabel("低额度通知")
         notifySwitch.translatesAutoresizingMaskIntoConstraints = false
 
         notifyPercentField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         notifyPercentField.stringValue = String(format: "%.0f", service.config.double("notifications.percent", default: 20))
         notifyPercentField.alignment = .right
+        notifyPercentField.setAccessibilityLabel("通知百分比阈值")
         notifyPercentField.translatesAutoresizingMaskIntoConstraints = false
         notifyPercentField.widthAnchor.constraint(equalToConstant: 64).isActive = true
 
@@ -899,6 +971,7 @@ final class SettingsWindowController: NSWindowController {
         notifyStatusLabel.font = .systemFont(ofSize: 10)
         notifyStatusLabel.textColor = Theme.tertiary
         notifyStatusLabel.lineBreakMode = .byTruncatingTail
+        notifyStatusLabel.setAccessibilityLabel("通知权限状态")
 
         testNotifyButton.bezelStyle = .inline
         testNotifyButton.isBordered = false
@@ -931,6 +1004,7 @@ final class SettingsWindowController: NSWindowController {
             field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
             field.alignment = .right
             field.stringValue = String(format: "%.0f", service.config.double("style.thresholds.\(id)", default: fallback))
+            field.setAccessibilityLabel("\(id) 阈值")
             field.translatesAutoresizingMaskIntoConstraints = false
             field.widthAnchor.constraint(equalToConstant: 54).isActive = true
             creditThresholdFields[id] = field
@@ -1132,13 +1206,13 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func groupCard(_ rows: [NSView]) -> NSView {
-        let card = NSView()
+        let card = ThemedSurfaceView()
         card.wantsLayer = true
-        card.layer?.backgroundColor = Theme.surface.resolvedCGColor()
+        card.surfaceColor = Theme.surface
+        card.surfaceBorderColor = NSColor.separatorColor.withAlphaComponent(0.12)
+        card.surfaceBorderWidth = 1
         card.layer?.cornerRadius = 12
         card.layer?.cornerCurve = .continuous
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.12).cgColor
         card.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = NSStackView(views: rows)
@@ -1199,9 +1273,9 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func separator() -> NSView {
-        let line = NSView()
+        let line = ThemedSurfaceView()
         line.wantsLayer = true
-        line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.16).cgColor
+        line.surfaceColor = NSColor.separatorColor.withAlphaComponent(0.16)
         line.translatesAutoresizingMaskIntoConstraints = false
         line.heightAnchor.constraint(equalToConstant: 1).isActive = true
         return line
@@ -1212,13 +1286,13 @@ final class SettingsWindowController: NSWindowController {
         let avatar = AvatarView(letter: style.letter, color: style.color, size: 24, provider: id)
         let name = label(style.shortName, size: 12.5, weight: .semibold)
 
-        let dot = NSView()
+        let dot = ThemedSurfaceView()
         dot.wantsLayer = true
+        dot.surfaceColor = Theme.tertiary
         dot.translatesAutoresizingMaskIntoConstraints = false
         dot.widthAnchor.constraint(equalToConstant: 6).isActive = true
         dot.heightAnchor.constraint(equalToConstant: 6).isActive = true
         dot.layer?.cornerRadius = 3
-        dot.layer?.backgroundColor = Theme.tertiary.resolvedCGColor()
 
         let status = label("未检测", size: 10, color: Theme.secondary)
         let statusRow = NSStackView(views: [dot, status])
@@ -1240,6 +1314,7 @@ final class SettingsWindowController: NSWindowController {
         visibility.action = #selector(visibilityChanged(_:))
         visibility.identifier = NSUserInterfaceItemIdentifier(id)
         visibility.toolTip = "在面板和菜单栏显示"
+        visibility.setAccessibilityLabel("\(style.shortName) 在面板和菜单栏显示")
         visibilitySwitches[id] = visibility
 
         let configure = ClosureButton(title: "配置…") { [weak self] in
@@ -1322,30 +1397,30 @@ final class SettingsWindowController: NSWindowController {
             guard let provider = snapshot?.providers.first(where: { $0.id == id }) else {
                 views.text.stringValue = "未检测"
                 views.text.textColor = Theme.secondary
-                views.dot.layer?.backgroundColor = Theme.tertiary.resolvedCGColor()
+                views.dot.surfaceColor = Theme.tertiary
                 continue
             }
             switch provider.status {
             case "ok":
                 views.text.stringValue = "已连接 · \(provider.plan ?? "自动")"
                 views.text.textColor = Theme.secondary
-                views.dot.layer?.backgroundColor = Theme.success.resolvedCGColor()
+                views.dot.surfaceColor = Theme.success
             case "warn":
                 views.text.stringValue = provider.detail ?? "额度紧张"
                 views.text.textColor = .systemOrange
-                views.dot.layer?.backgroundColor = Theme.warning.resolvedCGColor()
+                views.dot.surfaceColor = Theme.warning
             case "error":
                 views.text.stringValue = provider.error ?? "凭证失效"
                 views.text.textColor = .systemRed
-                views.dot.layer?.backgroundColor = Theme.danger.resolvedCGColor()
+                views.dot.surfaceColor = Theme.danger
             case "unconfigured":
                 views.text.stringValue = "需要配置"
                 views.text.textColor = .systemOrange
-                views.dot.layer?.backgroundColor = Theme.warning.resolvedCGColor()
+                views.dot.surfaceColor = Theme.warning
             default:
                 views.text.stringValue = "已停用"
                 views.text.textColor = Theme.tertiary
-                views.dot.layer?.backgroundColor = Theme.tertiary.resolvedCGColor()
+                views.dot.surfaceColor = Theme.tertiary
             }
         }
     }
@@ -1396,26 +1471,38 @@ final class SettingsWindowController: NSWindowController {
         checkinButton.title = checkin.isRunning ? "签到中…" : "立即签到"
         checkinButton.isEnabled = !checkin.isRunning
         checkinButton.isHidden = checkin.hasCheckedInToday
-        for (id, label) in checkinDetailStatusLabels {
+        for (_, label) in checkinDetailStatusLabels {
             let ok = checkin.hasCheckedInToday
             label.stringValue = ok ? "已签到" : "待签到"
             label.textColor = ok ? Theme.success : Theme.tertiary
         }
     }
 
+    /// 外观变化时原地刷新颜色，不再重建 contentView / 重新 loadValues，
+    /// 以免丢掉未保存的输入、first responder、滚动位置，也避免复用控件上累积约束。
     func reloadForAppearance() {
-        window?.appearance = NSApp.appearance
-        let page = selectedPage
-        pageViews.removeAll()
-        navButtons.removeAll()
-        providerStatusViews.removeAll()
-        visibilitySwitches.removeAll()
-        checkinDetailStatusLabels.removeAll()
-        window?.contentView = buildContent()
-        loadValues()
+        guard let window, let content = window.contentView else { return }
+        window.appearance = NSApp.appearance
+        refreshThemedSurfaces(in: content)
+
+        // 这些控件保存的是静态 CGColor / 具体色，需要在外观切换后重新解析。
+        let accent = Theme.accent.resolvedForAppearance()
+        scaleSlider.trackFillColor = accent
+        warningSlider.trackFillColor = accent
+        dangerSlider.trackFillColor = accent
+        navButtons.forEach { $0.refreshAppearance() }
+
+        // 状态色（成功/警告/危险）在深色外观下也是动态色，重算一次圆点与文字。
         updateProviderStatuses(service.snapshot)
-        selectPage(page)
-        updateCheckinStatus()
+        updateScalePreview()
+        content.needsDisplay = true
+    }
+
+    private func refreshThemedSurfaces(in node: NSView) {
+        (node as? ThemedSurfaceView)?.applySurface()
+        for subview in node.subviews {
+            refreshThemedSurfaces(in: subview)
+        }
     }
 
     @objc private func menuBarModeChanged() {
@@ -1458,7 +1545,9 @@ final class SettingsWindowController: NSWindowController {
             value: "72",
             remaining: 72,
             severity: .healthy,
-            scale: scale
+            scale: scale,
+            ink: .white,
+            fixedInk: true
         )
         scalePreview.image = icon
     }
@@ -1530,13 +1619,13 @@ private final class FlippedView: NSView {
 
 
 func makePaperPanel(cornerRadius: CGFloat) -> NSView {
-    let view = NSView()
+    let view = ThemedSurfaceView()
     view.wantsLayer = true
-    view.layer?.backgroundColor = Theme.surfaceAlt.resolvedCGColor()
+    view.surfaceColor = Theme.surfaceAlt
+    view.surfaceBorderColor = Theme.separator
+    view.surfaceBorderWidth = 1
     view.layer?.cornerRadius = cornerRadius
     view.layer?.cornerCurve = .continuous
-    view.layer?.borderWidth = 1
-    view.layer?.borderColor = Theme.separator.resolvedCGColor()
     view.layer?.shadowColor = NSColor.black.cgColor
     view.layer?.shadowOpacity = 0.05
     view.layer?.shadowRadius = 12

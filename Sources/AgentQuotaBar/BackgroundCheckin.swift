@@ -14,10 +14,7 @@ enum BackgroundCheckin {
         let support = home.appendingPathComponent(".config/agent-quota", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let log = support.appendingPathComponent("checkin.log").path
-
-        let agents = home.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
-        try? FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
-        let plist = agents.appendingPathComponent("\(label).plist")
+        let plistURL = home.appendingPathComponent("Library/LaunchAgents/\(label).plist")
 
         let payload: [String: Any] = [
             "Label": label,
@@ -29,39 +26,12 @@ enum BackgroundCheckin {
             "StandardOutPath": log,
             "StandardErrorPath": log,
         ]
-
-        guard let data = try? PropertyListSerialization.data(
-            fromPropertyList: payload,
-            format: .xml,
-            options: 0
-        ) else { return }
-        try? data.write(to: plist, options: .atomic)
-
-        let uid = getuid()
-        launchctl(["bootout", "gui/\(uid)/\(label)"])
-        launchctl(["bootstrap", "gui/\(uid)", plist.path])
+        LaunchAgentInstaller.install(label: label, payload: payload, plistURL: plistURL)
     }
 
     static func uninstall() {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let plist = home.appendingPathComponent("Library/LaunchAgents/\(label).plist")
-        launchctl(["bootout", "gui/\(getuid())/\(label)"])
-        try? FileManager.default.removeItem(at: plist)
-    }
-
-    @discardableResult
-    private static func launchctl(_ arguments: [String]) -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus
-        } catch {
-            return -1
-        }
+        let plistURL = home.appendingPathComponent("Library/LaunchAgents/\(label).plist")
+        LaunchAgentInstaller.uninstall(label: label, plistURL: plistURL)
     }
 }

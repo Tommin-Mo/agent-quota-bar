@@ -8,7 +8,7 @@ enum QuotaError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .nodeMissing:
-            return "未找到 Node.js，请先安装（brew install node）"
+            return "未找到 Node.js，请先安装（brew install node / nvm install --lts）"
         case .collectorMissing:
             return "缺少 collector.js，请重新构建 App"
         case .failed(let message):
@@ -41,21 +41,23 @@ final class QuotaService {
         refresh(only: nil)
     }
 
-    /// `only` 用于 DeepSeek 的高频余额采样；只合并对应 provider，不覆盖其他数据。
+    /// `only` 可以是逗号分隔的 provider 列表（如 "deepseek" 或 "deepseek,trae"）。
+    /// 定向刷新只合并对应 provider，不覆盖其他数据。
     func refresh(only: String?) {
         guard !isRefreshing else { return }
         isRefreshing = true
         onChange?()
 
         let configPath = config.url.path
+        let onlyIDs = Self.providerIDs(from: only)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let result = Result { try Self.runCollector(configPath: configPath, only: only) }
+            let result = Result { try Self.runCollector(configPath: configPath, only: onlyIDs) }
             DispatchQueue.main.async {
                 self.isRefreshing = false
                 switch result {
                 case .success(let incoming):
-                    self.apply(incoming, only: only)
+                    self.apply(incoming, only: onlyIDs)
                 case .failure(let error):
                     self.errorMessage = error.localizedDescription
                 }
@@ -65,50 +67,72 @@ final class QuotaService {
     }
 
     /// 保留最后一次可用数据；网络错误不覆盖旧快照。
-    private func apply(_ incoming: QuotaSnapshot, only: String? = nil) {
-        let active = incoming.providers.filter { $0.status != "disabled" }
-        let networkErrors = active.filter(Self.isNetworkProvider)
-        let allNetwork = !active.isEmpty && networkErrors.count == active.count
-
-        if allNetwork {
-            isOffline = true
-            errorMessage = nil
-            // 有缓存就继续展示缓存，连时间都不改；没有缓存则保持空状态。
-            return
+    ///
+    /// 离线（`isOffline`）只在“所有启用的 provider 都因网络错误失败”时成立；
+    /// 部分失败时保留成功 provider 的新数据，并给失败的 provider 留 error 行。
+    private func apply(_ incoming: QuotaSnapshot, only: [String]? = nil) {
+        // 未配置的 provider 不参与“是否整体离线”的判断；否则新装用户只配了
+        // DeepSeek 时，离线会被 4 个 unconfigured 行稀释成“在线”。
+        let incomingRelevant = incoming.providers.filter {
+            $0.status != "disabled" && $0.status != "unconfigured"
         }
+        let allIncomingNetworkFailed = !incomingRelevant.isEmpty
+            && incomingRelevant.allSatisfy { $0.status == "error" && Self.isNetworkProvider($0) }
 
-        var providers = incoming.providers
-        if let only, let old = snapshot {
-            // 单 provider 高频刷新：替换这一家，其他 provider 保持原样。
-            var mergedProviders = old.providers
-            for provider in providers {
-                if provider.id == only {
-                    if let index = mergedProviders.firstIndex(where: { $0.id == only }) {
+        if only != nil {
+            // 定向刷新：网络掉线不能凭单个 provider 判定全局离线，
+            // 也不要用错误行盖掉缓存里的可用数据。
+            if allIncomingNetworkFailed {
+                isOffline = true
+                errorMessage = nil
+                return
+            }
+
+            var providers = incoming.providers
+            if let old = snapshot {
+                // 定向刷新：替换目标 provider，其余保持原样（不会因子集响应丢掉其他家数据）。
+                var mergedProviders = old.providers
+                for provider in incoming.providers {
+                    if let index = mergedProviders.firstIndex(where: { $0.id == provider.id }) {
                         mergedProviders[index] = provider
                     } else {
                         mergedProviders.append(provider)
                     }
                 }
+                providers = mergedProviders
             }
-            providers = mergedProviders
-        }
-        if !networkErrors.isEmpty, let old = snapshot {
-            providers = providers.map { provider in
-                guard Self.isNetworkProvider(provider),
-                      let previous = old.providers.first(where: { $0.id == provider.id })
-                else { return provider }
-                return previous
-            }
+
+            let merged = QuotaSnapshot(
+                schema: incoming.schema,
+                updatedAt: incoming.updatedAt,
+                sampledAt: incoming.sampledAt,
+                providers: providers
+            )
+            snapshot = merged
+            // 定向采集成功说明网络可用，不再处于“全部 provider 网络失败”的离线状态。
+            isOffline = false
+            errorMessage = nil
+            UsageTracker.shared.record(snapshot: merged, only: Set(only ?? []))
+            saveCache(merged)
+            return
         }
 
+        if allIncomingNetworkFailed {
+            // 整体离线：保留上次数据、连时间都不改。
+            isOffline = true
+            errorMessage = nil
+            return
+        }
+
+        isOffline = false
+        errorMessage = nil
         let merged = QuotaSnapshot(
             schema: incoming.schema,
             updatedAt: incoming.updatedAt,
-            providers: providers
+            sampledAt: incoming.sampledAt,
+            providers: incoming.providers
         )
         snapshot = merged
-        isOffline = !networkErrors.isEmpty
-        errorMessage = nil
         UsageTracker.shared.record(snapshot: merged)
         saveCache(merged)
     }
@@ -117,6 +141,15 @@ final class QuotaService {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         try? data.write(to: cacheURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
+    }
+
+    private static func providerIDs(from only: String?) -> [String]? {
+        guard let only else { return nil }
+        let ids = only
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return ids.isEmpty ? nil : ids
     }
 
     private static func isNetworkProvider(_ provider: ProviderStatus) -> Bool {
@@ -137,7 +170,7 @@ final class QuotaService {
     func verify(provider: String, completion: @escaping (Result<ProviderStatus, Error>) -> Void) {
         let configPath = config.url.path
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try Self.runCollector(configPath: configPath, only: provider) }
+            let result = Result { try Self.runCollector(configPath: configPath, only: [provider]) }
             DispatchQueue.main.async {
                 switch result {
                 case .success(let snapshot):
@@ -164,27 +197,27 @@ final class QuotaService {
 
     // MARK: - 子进程
 
-    static func fetchSnapshot(configPath: String) throws -> QuotaSnapshot {
-        try runCollector(configPath: configPath)
+    /// 只抓取指定 provider（`only` 为空时抓全部）。
+    static func fetchSnapshot(configPath: String, only: [String]? = nil) throws -> QuotaSnapshot {
+        try runCollector(configPath: configPath, only: only)
     }
 
-    private static func runCollector(configPath: String, only: String? = nil) throws -> QuotaSnapshot {
+    private static func runCollector(configPath: String, only: [String]? = nil) throws -> QuotaSnapshot {
         let process = Process()
         let script = try findCollectorScript()
         var arguments = [script]
-        if let only { arguments.append("--only=\(only)") }
-
-        if let node = findNode() {
-            process.executableURL = URL(fileURLWithPath: node)
-            process.arguments = arguments
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["node"] + arguments
+        if let only, !only.isEmpty {
+            arguments.append("--only=\(only.joined(separator: ","))")
         }
 
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        environment["AGENT_QUOTA_CONFIG"] = configPath
+        let node = try findNode()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = arguments
+
+        var environment = makeEnvironment(configPath: configPath)
+        // 把 node 所在目录放到 PATH 最前，collector 里若有子进程也能找到同一套 Node。
+        let nodeDirectory = URL(fileURLWithPath: node).deletingLastPathComponent().path
+        environment["PATH"] = nodeDirectory + ":" + (environment["PATH"] ?? "")
         process.environment = environment
 
         let outPipe = Pipe()
@@ -195,6 +228,7 @@ final class QuotaService {
         do {
             try process.run()
         } catch {
+            cachedNodePath = nil
             throw QuotaError.failed("无法启动 collector：\(error.localizedDescription)")
         }
 
@@ -229,19 +263,15 @@ final class QuotaService {
     private static func runCheckinProcess(configPath: String) throws -> CheckinReport {
         let process = Process()
         let script = try findCollectorScript()
-        var arguments = [script, "--checkin", "--only=trae,workbuddy"]
+        let arguments = [script, "--checkin", "--only=trae,workbuddy"]
 
-        if let node = findNode() {
-            process.executableURL = URL(fileURLWithPath: node)
-            process.arguments = arguments
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["node"] + arguments
-        }
+        let node = try findNode()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = arguments
 
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        environment["AGENT_QUOTA_CONFIG"] = configPath
+        var environment = makeEnvironment(configPath: configPath)
+        let nodeDirectory = URL(fileURLWithPath: node).deletingLastPathComponent().path
+        environment["PATH"] = nodeDirectory + ":" + (environment["PATH"] ?? "")
         process.environment = environment
 
         let outPipe = Pipe()
@@ -279,9 +309,126 @@ final class QuotaService {
         }
     }
 
-    private static func findNode() -> String? {
-        ["/usr/local/bin/node", "/opt/homebrew/bin/node", "/usr/bin/node"]
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    private static func makeEnvironment(configPath: String) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["AGENT_QUOTA_CONFIG"] = configPath
+        return environment
+    }
+
+    // MARK: - Node 发现
+
+    /// 依次查找 Homebrew / 系统 / nvm / volta / asdf / fnm / 本地目录里的 node。
+    /// 找不到时抛 `nodeMissing`，不再回退到 `/usr/bin/env node` 让 stderr 变成看不懂的原始错误。
+    private static func findNode() throws -> String {
+        if let cached = cachedNodePath { return cached }
+        let executable = locateNode()
+        guard let executable else { throw QuotaError.nodeMissing }
+        cachedNodePath = executable
+        return executable
+    }
+
+    private static var cachedNodePath: String?
+
+    private static func locateNode() -> String? {
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser
+
+        var candidates: [String] = [
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+            "/opt/local/bin/node",
+        ]
+
+        // 环境变量里的 NODE_BINARY / NVM_BIN（从终端启动 App 时常见）。
+        if let binary = ProcessInfo.processInfo.environment["NODE_BINARY"], !binary.isEmpty {
+            candidates.insert(binary, at: 0)
+        }
+        if let nvmBin = ProcessInfo.processInfo.environment["NVM_BIN"], !nvmBin.isEmpty {
+            candidates.insert(nvmBin + "/node", at: 0)
+        }
+
+        // PATH 里已有的 node（覆盖 volta/asdf shim、用户自定义 PATH）。
+        if let path = ProcessInfo.processInfo.environment["PATH"] {
+            for directory in path.split(separator: ":") {
+                candidates.append(String(directory) + "/node")
+            }
+        }
+
+        // nvm: ~/.nvm/versions/node/vX.Y.Z/bin/node，取版本号最大的。
+        let nvmRoot = home.appendingPathComponent(".nvm/versions/node", isDirectory: true)
+        candidates.append(contentsOf: versionedNodePaths(root: nvmRoot, suffix: "bin/node"))
+
+        // fnm
+        candidates.append(contentsOf: versionedNodePaths(
+            root: home.appendingPathComponent(".local/share/fnm/node-versions", isDirectory: true),
+            suffix: "installation/bin/node"
+        ))
+        candidates.append(contentsOf: versionedNodePaths(
+            root: home.appendingPathComponent("Library/Application Support/fnm/node-versions", isDirectory: true),
+            suffix: "installation/bin/node"
+        ))
+
+        // asdf
+        candidates.append(home.appendingPathComponent(".asdf/shims/node").path)
+        candidates.append(contentsOf: versionedNodePaths(
+            root: home.appendingPathComponent(".asdf/installs/nodejs", isDirectory: true),
+            suffix: "bin/node"
+        ))
+
+        // volta / 用户本地安装
+        candidates.append(home.appendingPathComponent(".volta/bin/node").path)
+        candidates.append(home.appendingPathComponent("n/bin/node").path)
+        candidates.append(home.appendingPathComponent("bin/node").path)
+
+        // 最后才用系统 PATH 查找（GUI 启动时 PATH 很短，但可能仍命中）。
+        if let found = whichNode() {
+            candidates.append(found)
+        }
+
+        return candidates.first { fileManager.isExecutableFile(atPath: $0) }
+    }
+
+    /// 列出 root 下所有版本目录，按版本号从大到小拼接 `<version>/<suffix>`。
+    private static func versionedNodePaths(root: URL, suffix: String) -> [String] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        let sorted = entries.sorted { lhs, rhs in
+            lhs.lastPathComponent.compare(
+                rhs.lastPathComponent,
+                options: [.numeric, .caseInsensitive]
+            ) == .orderedDescending
+        }
+        return sorted.map { $0.appendingPathComponent(suffix).path }
+    }
+
+    private static func whichNode() -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        process.arguments = ["node"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        process.environment = environment
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let path = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return path.isEmpty ? nil : path
     }
 
     private static func findCollectorScript() throws -> String {

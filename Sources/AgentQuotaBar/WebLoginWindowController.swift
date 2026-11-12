@@ -48,15 +48,19 @@ final class WebLoginWindowController: NSWindowController, WKNavigationDelegate, 
 
     private func buildContent() {
         guard let window else { return }
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 700))
+        let container = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 520, height: 700))
         container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        container.surfaceColor = .windowBackgroundColor
 
-        let title = NSTextField(labelWithString: kind == .workbuddy ? "登录 WorkBuddy（个人版）" : "登录 OpenCode")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        let title = label(
+            kind == .workbuddy ? "登录 WorkBuddy（个人版）" : "登录 OpenCode",
+            size: 13,
+            weight: .semibold
+        )
         statusLabel.font = .systemFont(ofSize: 10)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.stringValue = "登录后自动关闭。"
+        statusLabel.setAccessibilityLabel("登录状态")
 
         let titles = NSStackView(views: [title, statusLabel])
         titles.orientation = .vertical
@@ -80,6 +84,7 @@ final class WebLoginWindowController: NSWindowController, WKNavigationDelegate, 
         configuration.websiteDataStore = .default()
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
+        webView.setAccessibilityLabel(kind == .workbuddy ? "WorkBuddy 登录页面" : "OpenCode 登录页面")
         webView.translatesAutoresizingMaskIntoConstraints = false
 
         let separator = NSBox()

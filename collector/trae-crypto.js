@@ -95,6 +95,50 @@ const DATA_DIRS = {
   'solo-sg': () => path.join(os.homedir(), 'Library', 'Application Support', 'TRAE SOLO', 'User'),
 };
 
+// storage.json 是本机可写数据，里面的 host 不能直接拼进请求 URL：
+// 只允许官方 Trae 域名 + https，否则 JWT 可能被送到任意主机。
+const TRAE_HOST_DOMAINS = ['trae.cn', 'trae.ai'];
+const DEFAULT_TRAE_HOST = 'https://api.trae.cn';
+
+function isTraeHostname(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return TRAE_HOST_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
+}
+
+/**
+ * 校验并规范化 host：必须 https、官方 Trae 域名，且不带 userinfo/端口/路径/
+ * query/hash，避免把登录态发到别处或做参数走私。不合法时抛错，调用方按
+ * “未配置/失败”处理，绝不发出请求。
+ */
+function normalizeTraeHost(rawHost) {
+  const value =
+    rawHost === undefined || rawHost === null || String(rawHost).trim() === ''
+      ? DEFAULT_TRAE_HOST
+      : String(rawHost).trim();
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('Trae 登录态中的 host 不是合法 URL，请重新登录 Trae');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Trae 登录态中的 host 必须是 https，已拒绝发送登录态');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('Trae 登录态中的 host 不允许携带用户信息，已拒绝发送登录态');
+  }
+  if (parsed.port && parsed.port !== '443') {
+    throw new Error('Trae 登录态中的 host 不允许使用非标准端口，已拒绝发送登录态');
+  }
+  if ((parsed.pathname && parsed.pathname !== '/') || parsed.search || parsed.hash) {
+    throw new Error('Trae 登录态中的 host 只能是站点根地址，已拒绝发送登录态');
+  }
+  if (!isTraeHostname(parsed.hostname)) {
+    throw new Error('Trae 登录态中的 host 不是允许的 Trae 域名，已拒绝发送登录态');
+  }
+  return parsed.origin;
+}
+
 function findStorage(edition) {
   const dirs = [];
   if (edition && DATA_DIRS[edition]) dirs.push(DATA_DIRS[edition]());
@@ -153,11 +197,17 @@ function readTraeAuth(edition = 'cn') {
     refreshToken: data.refreshToken || '',
     expiredAt: data.expiredAt || null,
     userId: String(data.userId || ''),
-    host: data.host || 'https://api.trae.cn',
+    host: normalizeTraeHost(data.host),
     edition,
     storagePath,
     deviceId: readTraeDeviceId(edition),
   };
 }
 
-module.exports = { readTraeAuth, readTraeDeviceId, decryptStorageValue, DATA_DIRS };
+module.exports = {
+  readTraeAuth,
+  readTraeDeviceId,
+  decryptStorageValue,
+  normalizeTraeHost,
+  DATA_DIRS,
+};

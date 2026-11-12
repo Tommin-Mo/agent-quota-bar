@@ -41,6 +41,48 @@ const DEFAULT_CONFIG = {
 
 // ---------------------------------------------------------------- 配置
 
+/**
+ * 原子写文件：同目录写成 0600 临时文件 → fsync → rename 覆盖。
+ * rename 是原子操作，进程崩在中途也不会留下半截 JSON；默认保留原文件权限，
+ * 新文件按 0600 创建（配置里可能带 API Key）。
+ */
+function writeFileAtomic(filePath, data, options = {}) {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  let mode = options.mode;
+  if (mode === undefined) {
+    try {
+      mode = fs.statSync(filePath).mode & 0o777;
+    } catch {
+      mode = 0o600;
+    }
+  }
+  const tmpPath = path.join(
+    dir,
+    `.${path.basename(filePath)}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`
+  );
+  let fd;
+  try {
+    fd = fs.openSync(tmpPath, 'wx', mode);
+    fs.fchmodSync(fd, mode);
+    fs.writeFileSync(fd, data, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tmpPath, filePath);
+  } catch (e) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {}
+    throw e;
+  }
+}
+
 function loadConfig() {
   let user = {};
   try {
@@ -48,8 +90,7 @@ function loadConfig() {
   } catch (e) {
     if (e.code === 'ENOENT') {
       try {
-        fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-        fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n', { mode: 0o600 });
+        writeFileAtomic(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n', { mode: 0o600 });
       } catch {}
     }
   }
@@ -63,6 +104,21 @@ function loadConfig() {
 const CONFIG = loadConfig();
 
 // ---------------------------------------------------------------- 网络
+
+// 用绝对路径调用系统 curl，避免 PATH 被劫持后执行同名的假 curl。
+const CURL_BIN = '/usr/bin/curl';
+// -q 必须是 curl 的第一个参数（忽略用户的 .curlrc）。
+// 配置全部走 stdin（-K -），Authorization / Cookie / API Key 因此不会出现在 argv 里。
+const CURL_ARGS = Object.freeze(['-q', '-K', '-']);
+// 代理挂掉后回退直连只对幂等请求开放；非幂等请求（POST）只有在“连接阶段就失败、
+// 请求肯定没发出”的 curl 退出码下才允许换路重发，避免重复扣额/重复签到。
+// 5/6/7 = 代理解析失败、主机解析失败、连接失败。
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const SAFE_RETRY_EXIT_CODES = new Set([5, 6, 7]);
+const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+// 这些环境变量会改写 curl 的配置/信任链，不传给子进程，统一使用系统信任库。
+const CURL_ENV_DROP = ['CURL_HOME', 'CURL_CA_BUNDLE', 'CURL_CA_PATH', 'SSL_CERT_FILE', 'SSL_CERT_DIR'];
+const CURL_ESCAPES = { '\\': '\\\\', '"': '\\"', '\t': '\\t', '\r': '\\r', '\n': '\\n', '\v': '\\v' };
 
 let _proxy;
 function systemProxy() {
@@ -91,39 +147,117 @@ function proxyFor(url) {
   return null;
 }
 
+/** 拒绝 CR/LF 等控制字符，防止请求头被拆成多条或注入 curl 配置。 */
+function assertHeader(name, value) {
+  if (!HEADER_NAME_RE.test(name)) throw new Error('请求头名称不合法，已拒绝发送');
+  if (
+    value.includes('\r') ||
+    value.includes('\n') ||
+    value.includes('\0') ||
+    /[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)
+  ) {
+    throw new Error(`请求头 ${name} 含非法控制字符，已拒绝发送`);
+  }
+}
+
+/** curl config 的双引号值：转义后写进 stdin，避免值里的引号/换行改写配置语法。 */
+function curlConfigValue(value) {
+  const text = String(value).replace(/[\\"\t\r\n\v]/g, (ch) => CURL_ESCAPES[ch]);
+  return `"${text}"`;
+}
+
+function curlEnv() {
+  const env = { ...process.env };
+  for (const key of CURL_ENV_DROP) delete env[key];
+  return env;
+}
+
+/** 生成单次 curl 调用的 stdin 配置（URL / 请求头 / body / 代理都在这里，不进 argv）。 */
+function buildCurlConfig({
+  url,
+  method = 'GET',
+  headers = {},
+  body = null,
+  proxy = null,
+  forceDirect = false,
+  timeout = 25,
+}) {
+  const target = new URL(url);
+  if (target.protocol !== 'https:' && target.protocol !== 'http:') {
+    throw new Error(`不支持的协议：${target.protocol}`);
+  }
+  const lines = [
+    'silent',
+    'show-error',
+    'compressed',
+    'globoff',
+    `max-time = ${curlConfigValue(timeout)}`,
+    `write-out = ${curlConfigValue('\n__AQB_STATUS__%{http_code}')}`,
+    `url = ${curlConfigValue(url)}`,
+  ];
+  if (String(method).toUpperCase() !== 'GET') lines.push(`request = ${curlConfigValue(method)}`);
+  if (proxy) lines.push(`proxy = ${curlConfigValue(proxy)}`);
+  else if (forceDirect) lines.push(`noproxy = ${curlConfigValue('*')}`);
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined || value === null || value === '') continue;
+    const text = String(value);
+    assertHeader(name, text);
+    lines.push(`header = ${curlConfigValue(`${name}: ${text}`)}`);
+  }
+  // data-raw：不当 @file 处理，body 内容原样发送。
+  if (body !== null && body !== undefined) lines.push(`data-raw = ${curlConfigValue(body)}`);
+  return lines.join('\n') + '\n';
+}
+
+/** 模糊失败（超时/连接被重置）时，非幂等请求不允许换代理/直连重发。 */
+function canRetryAfterCurlFailure(method, exitCode) {
+  const verb = String(method || 'GET').toUpperCase();
+  if (IDEMPOTENT_METHODS.has(verb)) return true;
+  return typeof exitCode === 'number' && SAFE_RETRY_EXIT_CODES.has(exitCode);
+}
+
 /** 用系统 curl 发请求：自动支持系统代理、TLS、gzip，避免 Node 代理配置的坑。 */
 function http(url, opts = {}) {
   const { method = 'GET', headers = {}, body = null, timeout = 25 } = opts;
   const proxy = proxyFor(url);
   // 代理优先；代理挂掉/端口没开时再直连，避免换网络后一直超时。
-  const candidates = [];
-  if (proxy) candidates.push(proxy);
-  candidates.push(null);
+  const candidates = proxy ? [proxy, null] : [null];
+  const host = new URL(url).hostname;
 
   let firstError = null;
   let lastError = null;
-  for (const candidate of candidates) {
-    const args = ['-sS', '--compressed', '-m', String(timeout), '-w', '\n__AQB_STATUS__%{http_code}'];
-    if (candidate) args.push('--proxy', candidate);
-    else if (proxy) args.push('--noproxy', '*');
-    for (const [k, v] of Object.entries(headers)) {
-      if (v !== undefined && v !== null && v !== '') args.push('-H', `${k}: ${v}`);
-    }
-    if (body !== null) args.push('--data-binary', body);
-    args.push(url);
+  for (let i = 0; i < candidates.length; i += 1) {
+    const candidate = candidates[i];
+    const config = buildCurlConfig({
+      url,
+      method,
+      headers,
+      body,
+      proxy: candidate,
+      forceDirect: candidate === null && Boolean(proxy),
+      timeout,
+    });
 
     let out;
     try {
-      out = execFileSync('curl', args, {
+      out = execFileSync(CURL_BIN, CURL_ARGS, {
+        input: config,
         encoding: 'utf8',
         maxBuffer: 16 * 1024 * 1024,
         timeout: (timeout + 5) * 1000,
+        env: curlEnv(),
+        // stderr 显式走 pipe：curl 的错误行只进错误对象，不直接混进 App 日志。
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (e) {
+      const exitCode = typeof e.status === 'number' ? e.status : null;
       const msg = String(e.stderr || e.message || e).trim().split('\n')[0];
-      const error = `网络请求失败（${new URL(url).hostname}）：${msg}`;
+      const error = `网络请求失败（${host}）：${msg}`;
       if (!firstError) firstError = error;
       lastError = error;
+      if (i + 1 < candidates.length && !canRetryAfterCurlFailure(method, exitCode)) {
+        throw new Error(error);
+      }
       continue;
     }
     const match = out.match(/__AQB_STATUS__(\d+)\s*$/);
@@ -153,6 +287,16 @@ function pick(obj, ...paths) {
 
 function num(v) {
   const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** 比 num 更严格：null / undefined / 空串 / 布尔 / 对象都算“没有值”，不折算成 0。 */
+function numStrict(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  if (!text) return undefined;
+  const n = Number(text);
   return Number.isFinite(n) ? n : undefined;
 }
 
@@ -330,6 +474,49 @@ function collectCodex() {
 
 // ---------------------------------------------------------------- DeepSeek
 
+/**
+ * 解析 /user/balance。total_balance 缺失/非数字时不能当 0：
+ * 省略 balance 字段，也不编造“已用 0 / 剩余 0”，只展示接口确实返回的明细。
+ */
+function deepseekResult(payload) {
+  const infos = Array.isArray(payload.balance_infos) ? payload.balance_infos : [];
+  if (!infos.length) return null;
+
+  const info = infos[0];
+  const total = numStrict(info.total_balance);
+  const granted = numStrict(info.granted_balance);
+  const topped = numStrict(info.topped_up_balance);
+  const currency = info.currency || 'CNY';
+  const metrics = [];
+  if (total !== undefined) {
+    const parts = [];
+    if (granted !== undefined) parts.push(`赠金 ${fmtMoney(granted, currency)}`);
+    if (topped !== undefined) parts.push(`充值 ${fmtMoney(topped, currency)}`);
+    metrics.push(creditMetric('余额', total, currency, parts.join(' · ')));
+  } else {
+    // 没有 total_balance 时不给 credit 指标：菜单栏会把首个 credit 当成余额，
+    // 不能拿赠金/充值分项顶替，只展示未知和确实返回的明细。
+    const parts = [];
+    if (granted !== undefined) parts.push(`赠金 ${fmtMoney(granted, currency)}`);
+    if (topped !== undefined) parts.push(`充值 ${fmtMoney(topped, currency)}`);
+    metrics.push(textMetric('余额', '—', parts.join(' · ') || '接口未返回余额总额'));
+  }
+
+  const available = payload.is_available !== false;
+  let status = 'ok';
+  if (!available || (total !== undefined && total <= 0)) status = 'warn';
+  let detail = 'API 余额（按量计费）';
+  if (!available) detail = '余额不足，API 不可用';
+  else if (total === undefined) detail = 'API 可用，但接口未返回余额总额';
+
+  return provider('deepseek', 'DeepSeek', status, metrics, {
+    headline: total === undefined ? '' : fmtMoney(total, currency),
+    detail,
+    // 只有拿到数值才输出 balance，避免 App 把缺失当成 0 元。
+    ...(total !== undefined ? { balance: total } : {}),
+  });
+}
+
 function collectDeepSeek(cfg) {
   const apiKey = String(cfg.apiKey || process.env.DEEPSEEK_API_KEY || '').trim();
   if (!apiKey) {
@@ -341,21 +528,9 @@ function collectDeepSeek(cfg) {
   if (res.status === 401) return failed('deepseek', 'DeepSeek', 'API Key 无效或已撤销');
   if (res.status !== 200 || !res.json) return failed('deepseek', 'DeepSeek', `余额接口返回 HTTP ${res.status}`);
 
-  const infos = Array.isArray(res.json.balance_infos) ? res.json.balance_infos : [];
-  if (!infos.length) return failed('deepseek', 'DeepSeek', '余额接口没有返回 balance_infos');
-
-  const info = infos[0];
-  const total = num(info.total_balance) ?? 0;
-  const granted = num(info.granted_balance) ?? 0;
-  const topped = num(info.topped_up_balance) ?? 0;
-  const currency = info.currency || 'CNY';
-  const metrics = [creditMetric('余额', total, currency, `赠金 ${fmtMoney(granted, currency)} · 充值 ${fmtMoney(topped, currency)}`)];
-  const available = res.json.is_available !== false;
-  return provider('deepseek', 'DeepSeek', available && total > 0 ? 'ok' : 'warn', metrics, {
-    headline: fmtMoney(total, currency),
-    detail: available ? 'API 余额（按量计费）' : '余额不足，API 不可用',
-    balance: total,
-  });
+  const result = deepseekResult(res.json);
+  if (!result) return failed('deepseek', 'DeepSeek', '余额接口没有返回 balance_infos');
+  return result;
 }
 
 // ---------------------------------------------------------------- Trae
@@ -539,7 +714,10 @@ const WB_AUTH_DIR = path.join(
   'auth'
 );
 const WB_KEY_CACHE = path.join(path.dirname(CONFIG_PATH), 'workbuddy-at-rest');
-const WB_ELECTRON = '/Applications/WorkBuddy.app/Contents/MacOS/Electron';
+const WB_ELECTRON_CANDIDATES = [
+  '/Applications/WorkBuddy.app/Contents/MacOS/Electron',
+  path.join(process.env.HOME || '', 'Applications/WorkBuddy.app/Contents/MacOS/Electron'),
+];
 
 function encodeU32(value) {
   const buffer = Buffer.allocUnsafe(4);
@@ -588,11 +766,13 @@ function openWorkbuddyEnvelope(envelope, key, framing) {
 
 function probeWorkBuddyKey() {
   const helper = path.join(__dirname, 'workbuddy-key');
-  if (!fs.existsSync(helper) || !fs.existsSync(WB_ELECTRON)) return null;
+  if (!fs.existsSync(helper)) return null;
+  const electron = WB_ELECTRON_CANDIDATES.find((candidate) => fs.existsSync(candidate));
+  if (!electron) return null;
   const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
   let result;
   try {
-    result = spawnSync(WB_ELECTRON, [helper], {
+    result = spawnSync(electron, [helper], {
       timeout: 15000,
       encoding: 'utf8',
       env,
@@ -662,8 +842,7 @@ function workBuddyAutoCredential() {
     credential = tryDecrypt(secret);
     if (credential && secret) {
       try {
-        fs.mkdirSync(path.dirname(WB_KEY_CACHE), { recursive: true });
-        fs.writeFileSync(WB_KEY_CACHE, secret + '\n', { mode: 0o600 });
+        writeFileAtomic(WB_KEY_CACHE, secret + '\n', { mode: 0o600 });
       } catch {}
     }
   }
@@ -735,13 +914,16 @@ function collectWorkBuddy(cfg) {
   let total = 0;
   let remaining = 0;
   let soonest = null;
+  const nowMs = Date.now();
   for (const p of packages) {
     const t = num(pick(p, ...totalKeys)) ?? 0;
     const r = num(pick(p, ...remainKeys)) ?? 0;
-    total += t;
-    remaining += r;
     const exp = pick(p, 'ExpireTime', 'expireTime', 'ExpiredTime');
     const ts = num(exp) ? Number(exp) * (Number(exp) < 1e12 ? 1000 : 1) : null;
+    // 过期套餐不计入累计消费；否则未用积分到期会被误算成“今天用了”。
+    if (ts && ts <= nowMs) continue;
+    total += t;
+    remaining += r;
     if (r > 0 && ts && (!soonest || ts < soonest)) soonest = ts;
   }
 
@@ -775,9 +957,9 @@ function extractMeters(json) {
       return;
     }
     if (typeof node !== 'object') return;
-    const usedPercent = num(pick(node, 'used_percent', 'usedPercent', 'usage_percent', 'usagePercent', 'percent'));
-    const limit = num(pick(node, 'limit', 'total', 'quota', 'max'));
-    const used = num(pick(node, 'used', 'usage', 'consumed'));
+    const usedPercent = numStrict(pick(node, 'used_percent', 'usedPercent', 'usage_percent', 'usagePercent', 'percent'));
+    const limit = numStrict(pick(node, 'limit', 'total', 'quota', 'max'));
+    const used = numStrict(pick(node, 'used', 'usage', 'consumed'));
     const resetRaw = pick(node, 'reset_at', 'resets_at', 'resetAt', 'resetsAt', 'next_reset_at', 'period_end');
     let reset = null;
     if (resetRaw !== undefined) {
@@ -810,6 +992,34 @@ function extractMeters(json) {
   return out;
 }
 
+/**
+ * Go 订阅的 usage 窗口。窗口里既没有 percent、也没有可算出百分比的 used/limit 时
+ * 直接跳过：宁可少显示一格，也不要把缺失当成“已用 0%”。
+ */
+function goWindowMeters(json) {
+  const meters = [];
+  const windows = json && json.usage;
+  if (!windows || typeof windows !== 'object') return meters;
+  for (const [key, label] of [['rolling', '5 小时'], ['weekly', '本周'], ['monthly', '本月']]) {
+    const item = windows[key];
+    if (!item || typeof item !== 'object') continue;
+    let used = numStrict(item.percent);
+    if (used === undefined) {
+      const limit = numStrict(item.limit);
+      const usedValue = numStrict(item.used);
+      if (limit && usedValue !== undefined) used = (usedValue / limit) * 100;
+    }
+    if (used === undefined) continue;
+    let reset = null;
+    if (item.resetsAt) {
+      const parsed = Date.parse(String(item.resetsAt));
+      if (!Number.isNaN(parsed)) reset = parsed;
+    }
+    meters.push(percentMetric(label, used, reset));
+  }
+  return meters;
+}
+
 function collectOpenCode(cfg) {
   const mode = String(cfg.mode || '').toLowerCase();
   const apiKey = String(cfg.apiKey || process.env.OPENCODE_GO_API_KEY || '').trim();
@@ -823,21 +1033,7 @@ function collectOpenCode(cfg) {
       return failed('opencode', 'OpenCode', 'API Key 无效或已过期');
     }
     if (res.status === 200 && res.json) {
-      const meters = [];
-      const windows = res.json.usage;
-      if (windows && typeof windows === 'object') {
-        for (const [key, label] of [['rolling', '5 小时'], ['weekly', '本周'], ['monthly', '本月']]) {
-          const item = windows[key];
-          if (!item) continue;
-          const used = num(item.percent) ?? 0;
-          let reset = null;
-          if (item.resetsAt) {
-            const parsed = Date.parse(String(item.resetsAt));
-            if (!Number.isNaN(parsed)) reset = parsed;
-          }
-          meters.push(percentMetric(label, used, reset));
-        }
-      }
+      const meters = goWindowMeters(res.json);
       if (!meters.length) meters.push(...extractMeters(res.json));
       if (meters.length) {
         const first = meters[0];
@@ -1081,7 +1277,8 @@ function writeCheckinConfig(results) {
     checkin.lastSummary = summary || '今日已签到';
     if (workbuddy && workbuddy.streak != null) checkin.workbuddyStreak = workbuddy.streak;
     raw.checkin = checkin;
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 });
+    // 只改 checkin 字段并原子覆盖，保留用户其它配置项与文件权限。
+    writeFileAtomic(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
   } catch (e) {
     process.stderr.write(`write config failed: ${e.message}\n`);
   }
@@ -1151,6 +1348,7 @@ function main() {
     });
     return;
   }
+  const sampledAt = new Date().toISOString();
   const results = [];
 
   for (const [id, fn] of Object.entries(COLLECTORS)) {
@@ -1171,6 +1369,7 @@ function main() {
   const output = {
     schema: 1,
     updatedAt: new Date().toISOString(),
+    sampledAt,
     providers: results,
   };
   process.stdout.write(
@@ -1178,4 +1377,16 @@ function main() {
   );
 }
 
-main();
+if (require.main === module) main();
+
+// 导出内部实现，供离线测试直接调用；正常运行 collector 时行为不变。
+module.exports = {
+  http,
+  buildCurlConfig,
+  canRetryAfterCurlFailure,
+  writeFileAtomic,
+  writeCheckinConfig,
+  deepseekResult,
+  goWindowMeters,
+  CURL_ARGS,
+};

@@ -2,9 +2,14 @@ import AppKit
 import UserNotifications
 
 /// 低额度通知：按配置的百分比 / 积分阈值检查，每家每天最多一次。
+///
+/// 只在数据足够新时判断；并且要等系统授权通过、`add` 成功后才记录“今天已通知”，
+/// 避免拿缓存快照误报，也避免投递失败后当天再也收不到。
 final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationService()
     private let center = UNUserNotificationCenter.current()
+    /// 正在投递中的 provider，防止同一轮多次 render 重复发送。
+    private var inFlight: Set<String> = []
 
     private override init() {
         super.init()
@@ -12,7 +17,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     }
 
     var isEnabled: Bool {
-        (try? ConfigStore())?.bool("notifications.enabled", default: false) ?? false
+        ConfigStore().bool("notifications.enabled", default: false)
     }
 
     func authorizationStatus(completion: @escaping (UNAuthorizationStatus) -> Void) {
@@ -29,6 +34,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     func check(snapshot: QuotaSnapshot, config: ConfigStore) {
         guard config.bool("notifications.enabled", default: false) else { return }
+        guard isFresh(snapshot, config: config) else { return }
+
         let percentLimit = config.double("notifications.percent", default: 20)
 
         for provider in snapshot.providers where provider.status != "disabled" {
@@ -47,11 +54,17 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
                 key = "credit"
             }
 
-            guard let message, let key, !hasNotified(provider.id, config: config) else { continue }
-            send(title: "\(provider.name) 额度偏低", body: message)
-            config.set("notifications.last.\(provider.id)", todayKey)
-            config.set("notifications.lastKind.\(provider.id)", key)
-            try? config.save()
+            guard let message, let key else { continue }
+            guard !hasNotified(provider.id, config: config) else { continue }
+            guard !inFlight.contains(provider.id) else { continue }
+            inFlight.insert(provider.id)
+            deliver(
+                title: "\(provider.name) 额度偏低",
+                body: message,
+                providerID: provider.id,
+                kind: key,
+                config: config
+            )
         }
     }
 
@@ -59,19 +72,61 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         send(title: "Agent 额度", body: "这是一条低额度通知测试。")
     }
 
+    /// 快照必须是最近一次刷新得到的；加载自磁盘的旧缓存不参与判断。
+    private func isFresh(_ snapshot: QuotaSnapshot, config: ConfigStore) -> Bool {
+        guard let date = snapshot.updatedDate else { return false }
+        let age = Date().timeIntervalSince(date)
+        if age < 0 { return true } // 时钟回拨/未来时间：不做拦截
+        let limit = max(600, TimeInterval(config.refreshSeconds) * 2)
+        return age <= limit
+    }
+
     private func send(title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        let request = UNNotificationRequest(
-            identifier: "low-quota-\(UUID().uuidString)",
-            content: content,
-            trigger: nil
-        )
-        center.add(request) { error in
-            if let error {
-                NSLog("notification add failed: \(error.localizedDescription)")
+        deliver(title: title, body: body, providerID: nil, kind: nil, config: nil)
+    }
+
+    private func deliver(
+        title: String,
+        body: String,
+        providerID: String?,
+        kind: String?,
+        config: ConfigStore?
+    ) {
+        center.getNotificationSettings { [weak self] settings in
+            guard let self else { return }
+            let authorized = settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional
+            guard authorized else {
+                DispatchQueue.main.async {
+                    if let providerID { self.inFlight.remove(providerID) }
+                }
+                return
+            }
+
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
+            let request = UNNotificationRequest(
+                identifier: "low-quota-\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            )
+            self.center.add(request) { [weak self] error in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    guard let providerID else { return }
+                    self.inFlight.remove(providerID)
+                    guard error == nil else {
+                        NSLog("notification add failed: \(error?.localizedDescription ?? "unknown")")
+                        return
+                    }
+                    // 只有确认投递成功且已授权，才记为“今天已通知”。
+                    guard let config, let kind else { return }
+                    config.set("notifications.last.\(providerID)", self.todayKey)
+                    config.set("notifications.lastKind.\(providerID)", kind)
+                    try? config.save()
+                }
             }
         }
     }

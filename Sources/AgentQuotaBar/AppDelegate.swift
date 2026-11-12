@@ -34,8 +34,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         applyAppearance()
         QuotaStyle.apply(service.config)
-        BackgroundCheckin.installIfNeeded()
-        UsageSampler.installIfNeeded()
         if let icon = NSImage(named: "AppIcon") {
             NSApp.applicationIconImage = icon
         } else if let icon = NSImage(contentsOfFile: "Resources/AppIcon.icns") {
@@ -74,6 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             } catch {
                 log("save order failed: \(error)")
             }
+        }
+        popoverController.onPreferredContentSizeChange = { [weak self] size in
+            guard let self, self.popover.isShown else { return }
+            self.popover.contentSize = size
         }
         popover.contentViewController = popoverController
         popover.behavior = .transient
@@ -128,6 +130,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ) { [weak self] _ in
             self?.refreshThemeSurfaces()
         }
+
+        // 状态栏已经创建，再把 launchctl / 磁盘写入放到后台，避免启动被阻塞。
+        scheduleLaunchAgents()
+        surfaceConfigProblemIfNeeded()
+    }
+
+    /// LaunchAgent 的安装/更新涉及磁盘写入和 `launchctl`，全部异步执行。
+    private func scheduleLaunchAgents() {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.0) {
+            BackgroundCheckin.installIfNeeded()
+            UsageSampler.installIfNeeded()
+        }
+    }
+
+    /// 配置文件损坏时提示一次；ConfigStore 已经把坏文件备份走了。
+    private func surfaceConfigProblemIfNeeded() {
+        guard let message = service.config.loadError else { return }
+        log("config problem: \(message)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "配置文件需要处理"
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+        }
     }
 
     // MARK: 开发调试（AQB_* 环境变量，不影响正常使用）
@@ -167,6 +196,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func refreshCheckinUI() {
+        // 后台签到会直接写配置；先同步一次再展示状态。
+        checkin.refreshFromDisk()
         popoverController?.updateCheckin(
             status: checkin.statusText,
             detail: checkin.detailText,
@@ -349,6 +380,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func render() {
         QuotaStyle.apply(service.config)
         log("render providers=\(service.snapshot?.providers.count ?? -1) refreshing=\(service.isRefreshing) err=\(service.errorMessage ?? "nil")")
+        if let saveError = service.config.lastSaveError {
+            log("config save error: \(saveError)")
+        }
         guard let button = statusItem.button else { return }
 
         let mode = service.config.string("menuBarMode", default: "auto")
@@ -359,8 +393,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
 
         if let snapshot = visibleSnapshot {
+            let configured = service.config.string("menuBarProvider", default: "auto")
             let providerID = activeProviderID
-                ?? service.config.string("menuBarProvider", default: "auto")
+                ?? (configured == "auto" ? nil : configured)
                 ?? snapshot.worstProviderID()
                 ?? snapshot.providers.first?.id
             if let id = providerID, let item = snapshot.menuBarItem(for: id) {
@@ -478,34 +513,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         var percents: [String: Double] = [:]
         var consumed: Double?
         var balance: Double?
+        /// 最近一次检测到真实使用的快照时间；冷却期间也不会丢，冷却结束后补切。
+        var lastUsedAt: Date?
     }
 
     /// 最近使用只看“真的消耗”：used 上升、consumed 增加、余额下降。
     /// 窗口重置、签到 +100、充值上涨都不算使用。
-    private func detectUsage(_ provider: ProviderStatus) -> Bool {
+    @discardableResult
+    private func detectUsage(_ provider: ProviderStatus, at timestamp: Date) -> Bool {
         var current = ProviderUsageSnapshot()
-        current.percents = Dictionary(uniqueKeysWithValues: provider.metrics.compactMap { metric in
-            guard metric.kind == "percent", let used = metric.usedPercent else { return nil }
-            return (metric.label, used)
-        })
+        var occurrences: [String: Int] = [:]
+        for metric in provider.metrics where metric.kind == "percent" {
+            guard let used = metric.usedPercent else { continue }
+            // 同一 provider 可能出现同 label 的多条指标；用出现序号区分，
+            // 不能再用 Dictionary(uniqueKeysWithValues:)（重复 key 会直接崩溃）。
+            let base = "\(metric.kind)|\(metric.label)"
+            let occurrence = occurrences[base, default: 0]
+            occurrences[base] = occurrence + 1
+            let key = occurrence == 0 ? base : "\(base)#\(occurrence + 1)"
+            current.percents[key] = used
+        }
         current.consumed = provider.consumed
         current.balance = provider.balance
+        current.lastUsedAt = lastUsage[provider.id]?.lastUsedAt
 
-        defer { lastUsage[provider.id] = current }
-        guard let previous = lastUsage[provider.id] else { return false }
-
-        for (label, used) in current.percents {
-            if let old = previous.percents[label], used > old + 0.0001 {
-                return true
+        var used = false
+        if let previous = lastUsage[provider.id] {
+            for (label, value) in current.percents {
+                if let old = previous.percents[label], value > old + 0.0001 {
+                    used = true
+                    break
+                }
+            }
+            if !used, let consumed = current.consumed, let old = previous.consumed,
+               consumed > old + 0.0001 {
+                used = true
+            }
+            if !used, let balance = current.balance, let old = previous.balance,
+               balance < old - 0.0001 {
+                used = true
             }
         }
-        if let consumed = current.consumed, let old = previous.consumed, consumed > old + 0.0001 {
-            return true
+        if used {
+            current.lastUsedAt = timestamp
         }
-        if let balance = current.balance, let old = previous.balance, balance < old - 0.0001 {
-            return true
-        }
-        return false
+        lastUsage[provider.id] = current
+        return used
     }
 
     private func updateActiveProvider(snapshot: QuotaSnapshot, mode: String) {
@@ -522,24 +575,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         if mode == "fixed" {
             let fixed = service.config.string("menuBarProvider", default: "auto")
-            if snapshot.provider(withID: fixed) != nil {
+            if fixed != "auto", snapshot.provider(withID: fixed) != nil {
+                // 固定模式就是固定：即使这家报错也保持，图标显示 "!"，不偷偷换别家。
                 activeProviderID = fixed
                 return
             }
         }
 
         let now = Date()
-        var usedProviders: [String] = []
+        let usageTimestamp = snapshot.updatedDate ?? now
         for provider in candidates where provider.isUsable {
-            if detectUsage(provider) {
-                usedProviders.append(provider.id)
-            }
+            detectUsage(provider, at: usageTimestamp)
         }
 
-        if mode == "auto", let newest = usedProviders.first,
-           now.timeIntervalSince(lastSwitchAt) >= switchCooldown {
-            activeProviderID = newest
-            lastSwitchAt = now
+        if mode == "auto" {
+            // 选“最近一次真实使用”的那家；冷却期间只是不切，记录不会丢。
+            var latestUsed: (id: String, at: Date)?
+            for provider in candidates {
+                guard let usedAt = lastUsage[provider.id]?.lastUsedAt, usedAt > lastSwitchAt else {
+                    continue
+                }
+                if latestUsed == nil || usedAt > latestUsed!.at {
+                    latestUsed = (provider.id, usedAt)
+                }
+            }
+            if let latestUsed, now.timeIntervalSince(lastSwitchAt) >= switchCooldown {
+                activeProviderID = latestUsed.id
+                lastSwitchAt = now
+            }
         }
 
         if activeProviderID == nil || snapshot.provider(withID: activeProviderID!) == nil {
@@ -550,7 +613,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 activeProviderID = snapshot.worstProviderID()
             }
         }
-        if let id = activeProviderID,
+        // 自动模式才在出错时兜底；固定模式上面已经 return。
+        if mode != "fixed",
+           let id = activeProviderID,
            let provider = snapshot.provider(withID: id),
            provider.status == "error" || provider.status == "unconfigured" {
             activeProviderID = snapshot.worstProviderID()
@@ -581,6 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func showContextMenu() {
+        checkin.refreshFromDisk()
         let menu = NSMenu()
 
         let refresh = NSMenuItem(title: "立即刷新", action: #selector(refreshNow), keyEquivalent: "r")
@@ -816,9 +882,20 @@ func label(
     return label
 }
 
+final class ThemedWrappingLabel: NSTextField {
+    var roleColor: NSColor = .labelColor
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        textColor = roleColor.resolvedForAppearance()
+        needsDisplay = true
+    }
+}
+
 func wrappingLabel(_ text: String, size: CGFloat, color: NSColor, width: CGFloat) -> NSTextField {
-    let label = NSTextField(wrappingLabelWithString: text)
+    let label = ThemedWrappingLabel(wrappingLabelWithString: text)
     label.font = .systemFont(ofSize: size)
+    label.roleColor = color
     label.textColor = color.resolvedForAppearance()
     label.maximumNumberOfLines = 0
     label.preferredMaxLayoutWidth = width

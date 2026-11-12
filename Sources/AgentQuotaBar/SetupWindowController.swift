@@ -10,7 +10,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private var loginWindows: [WebLoginWindowController] = []
     private let statusLabel = NSTextField(labelWithString: "")
     private let saveButton = NSButton()
-    private let container = NSView()
+    private let container = ThemedSurfaceView()
     private let stack = NSStackView()
     private var segmented: NSSegmentedControl?
     private var goGroup: NSView?
@@ -45,7 +45,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         window.title = "配置 \(ProviderStyles.style(for: provider).shortName)"
         window.isReleasedWhenClosed = false
         window.isOpaque = true
-        window.backgroundColor = .white
+        // 不再硬编码白色：窗口/内容背景都跟随当前外观。
+        window.backgroundColor = .windowBackgroundColor
         window.center()
         super.init(window: window)
         window.delegate = self
@@ -61,7 +62,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         container.frame = NSRect(x: 0, y: 0, width: 560, height: 520)
 
         container.wantsLayer = true
-        container.layer?.backgroundColor = Theme.background.resolvedCGColor()
+        container.surfaceColor = Theme.background
 
         stack.orientation = .vertical
         stack.alignment = .centerX
@@ -207,7 +208,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             zen.spacing = 12
             zen.addArrangedSubview(fieldGroup(title: "Console Cookie（__Host-console_session）",
                                               key: "providers.opencode.cookie",
-                                              placeholder: "登录后自动写入", secure: false))
+                                              placeholder: "已保存（安全输入，可重新粘贴）", secure: true))
             zen.addArrangedSubview(fieldGroup(title: "Workspace ID（可选）", key: "providers.opencode.workspaceId",
                                               placeholder: "wrk_...，留空自动获取", secure: false))
             zenGroup = zen
@@ -322,6 +323,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         field.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular)
         field.placeholderString = placeholder
         field.stringValue = service.config.string(key)
+        field.setAccessibilityLabel(title)
         field.translatesAutoresizingMaskIntoConstraints = false
         field.heightAnchor.constraint(equalToConstant: 26).isActive = true
         fields[key] = field
@@ -336,13 +338,13 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func card(_ rows: [NSView]) -> NSView {
-        let box = NSView()
+        let box = ThemedSurfaceView()
         box.wantsLayer = true
-        box.layer?.backgroundColor = Theme.surface.resolvedCGColor()
+        box.surfaceColor = Theme.surface
+        box.surfaceBorderColor = NSColor.separatorColor.withAlphaComponent(0.12)
+        box.surfaceBorderWidth = 1
         box.layer?.cornerRadius = 12
         box.layer?.cornerCurve = .continuous
-        box.layer?.borderWidth = 1
-        box.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.12).cgColor
         box.translatesAutoresizingMaskIntoConstraints = false
 
         let inner = NSStackView(views: rows)
