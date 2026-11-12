@@ -54,7 +54,15 @@ enum MenuBarIcon {
 
             if drawsRing {
                 let ringRect = NSRect(x: padLeft + logoSize + gap, y: (height - ringSize) / 2, width: ringSize, height: ringSize)
-                drawRing(in: ringRect, value: value, remaining: remaining, severity: severity, ink: resolvedInk, scale: s)
+                drawRing(
+                    in: ringRect,
+                    value: value,
+                    remaining: remaining,
+                    severity: severity,
+                    ink: resolvedInk,
+                    scale: s,
+                    fixedInk: fixedInk
+                )
             } else {
                 NSGraphicsContext.current?.cgContext.setShadow(offset: .zero, blur: 0, color: nil)
                 let origin = NSPoint(
@@ -73,6 +81,11 @@ enum MenuBarIcon {
     /// - 深色菜单栏保持调用方给的白色（现有观感）。
     /// - 浅色菜单栏把“亮墨”换成深色，否则白字/白 logo 不可见。
     /// - `fixedInk` 用于设置里的深色预览底，不参与自适应。
+    private static var systemMenuBarAppearance: NSAppearance {
+        let dark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+        return NSAppearance(named: dark ? .darkAqua : .aqua) ?? NSAppearance.currentDrawing()
+    }
+
     private static func resolvedInk(_ requested: NSColor?, fixed: Bool) -> NSColor {
         let base = requested ?? .white
         // 菜单栏跟随系统外观，而不是 App 内强制的外观。
@@ -114,8 +127,11 @@ enum MenuBarIcon {
         remaining: Double?,
         severity: QuotaSeverity,
         ink: NSColor,
-        scale: CGFloat
+        scale: CGFloat,
+        fixedInk: Bool
     ) {
+        let appearance = fixedInk ? Theme.currentAppearance : Self.systemMenuBarAppearance
+        let ringColor = severity.color.resolvedForAppearance(appearance)
         let line: CGFloat = max(1.25, rect.width * 0.085)
         let center = NSPoint(x: rect.midX, y: rect.midY)
         let radius = (rect.width - line) / 2
@@ -125,7 +141,7 @@ enum MenuBarIcon {
         track.lineWidth = line
         let trackColor: NSColor = severity == .neutral
             ? ink.withAlphaComponent(0.32)
-            : severity.color.withAlphaComponent(0.30)
+            : ringColor.withAlphaComponent(0.30)
         trackColor.setStroke()
         track.stroke()
 
@@ -142,7 +158,7 @@ enum MenuBarIcon {
                 )
                 progress.lineWidth = line
                 progress.lineCapStyle = .round
-                severity.color.setStroke()
+                ringColor.setStroke()
                 progress.stroke()
             }
         }

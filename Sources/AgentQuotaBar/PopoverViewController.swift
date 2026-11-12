@@ -433,8 +433,7 @@ final class CheckinBadgeView: NSView {
         let diameter = min(bounds.width, bounds.height)
         let circle = NSBezierPath(ovalIn: NSRect(x: 0, y: (bounds.height - diameter) / 2,
                                                  width: diameter, height: diameter))
-        // 签到标记用真正的绿色；Theme.success 是品牌青色，容易被看成蓝绿色。
-        NSColor.systemGreen.setFill()
+        QuotaStyle.healthyColor.setFill()
         circle.fill()
 
         let check = NSBezierPath()
