@@ -123,6 +123,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         ) { [weak self] _ in
             self?.render()
         }
+
+        // 系统睡眠期间 Timer 不会触发；唤醒后立即补一次，避免菜单栏长期停在旧值。
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification,
+        ] {
+            workspaceCenter.addObserver(
+                self,
+                selector: #selector(handleSystemWake(_:)),
+                name: name,
+                object: nil
+            )
+        }
         DistributedNotificationCenter.default.addObserver(
             forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
             object: nil,
@@ -622,6 +637,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    @objc private func handleSystemWake(_ notification: Notification) {
+        log("system wake / session active; refreshing")
+        scheduleTimer()
+        service.refresh()
+    }
+
     @objc private func statusItemClicked() {
         if NSApp.currentEvent?.type == .rightMouseUp {
             showContextMenu()
@@ -630,7 +651,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            if service.snapshot == nil { service.refresh() }
+            // 打开面板时如果数据已经超过一个刷新周期，补一次；避免只能手动点“立即刷新”。
+            if service.snapshot == nil
+                || (service.snapshot?.updatedDate.map {
+                    Date().timeIntervalSince($0) > TimeInterval(service.config.refreshSeconds)
+                } ?? true) {
+                service.refresh()
+            }
             showPopover()
         }
     }
