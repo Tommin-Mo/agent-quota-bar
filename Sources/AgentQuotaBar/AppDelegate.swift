@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var deepSeekTimer: Timer?
     private var checkinTimer: Timer?
     private var offlineTimer: Timer?
+    private var appearanceTimer: Timer?
+    private var lastStatusAppearanceName: String?
     private lazy var networkMonitor = NetworkMonitor()
     private var popoverController: QuotaPopoverViewController!
     private var settingsController: SettingsWindowController?
@@ -112,6 +114,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         refreshCheckinUI()
         service.refresh()
         scheduleTimer()
+        // 状态栏按钮刚挂上时 effectiveAppearance 还是 VibrantLight，
+        // 系统菜单栏稍后才切换成 VibrantDark；补两次重绘，避免首屏黑图标。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.render() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.render() }
+        let appearanceTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self, let button = self.statusItem.button else { return }
+            let name = button.effectiveAppearance.name.rawValue
+            guard name != self.lastStatusAppearanceName else { return }
+            self.lastStatusAppearanceName = name
+            self.render()
+        }
+        RunLoop.main.add(appearanceTimer, forMode: .common)
+        self.appearanceTimer = appearanceTimer
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.checkin.runIfNeeded()
         }
@@ -144,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.refreshThemeSurfaces()
+            self?.render()
         }
 
         // 状态栏已经创建，再把 launchctl / 磁盘写入放到后台，避免启动被阻塞。
@@ -421,7 +437,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     remaining: item.remaining,
                     severity: item.severity,
                     scale: scale,
-                    ink: menuBarInk()
+                    ink: menuBarInk(),
+                    appearance: button.effectiveAppearance
                 )
                 button.attributedTitle = NSAttributedString(string: "")
                 button.imagePosition = .imageOnly

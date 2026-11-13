@@ -14,7 +14,8 @@ enum MenuBarIcon {
         severity: QuotaSeverity,
         scale: CGFloat = 1.25,
         ink: NSColor? = nil,
-        fixedInk: Bool = false
+        fixedInk: Bool = false,
+        appearance: NSAppearance? = nil
     ) -> NSImage {
         let s = max(0.8, min(1.6, scale))
         let logoSize = baseLogo * s
@@ -35,7 +36,7 @@ enum MenuBarIcon {
         let image = NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
             // 在真正绘制时解析外观：状态栏按钮会把自己的外观（浅色/深色菜单栏）
             // 设为当前绘制外观，这与 app 自身强制的外观无关。
-            let resolvedInk = Self.resolvedInk(ink, fixed: fixedInk)
+            let resolvedInk = Self.resolvedInk(ink, fixed: fixedInk, appearance: appearance ?? NSAppearance.currentDrawing())
             let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: resolvedInk]
 
             // 浅色菜单栏改用深色墨，深色投影会糊；深色菜单栏保留原来的白色 + 投影效果。
@@ -61,7 +62,8 @@ enum MenuBarIcon {
                     severity: severity,
                     ink: resolvedInk,
                     scale: s,
-                    fixedInk: fixedInk
+                    fixedInk: fixedInk,
+                    appearance: appearance ?? NSAppearance.currentDrawing()
                 )
             } else {
                 NSGraphicsContext.current?.cgContext.setShadow(offset: .zero, blur: 0, color: nil)
@@ -81,19 +83,23 @@ enum MenuBarIcon {
     /// - 深色菜单栏保持调用方给的白色（现有观感）。
     /// - 浅色菜单栏把“亮墨”换成深色，否则白字/白 logo 不可见。
     /// - `fixedInk` 用于设置里的深色预览底，不参与自适应。
-    private static var systemMenuBarAppearance: NSAppearance {
-        let dark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
-        return NSAppearance(named: dark ? .darkAqua : .aqua) ?? NSAppearance.currentDrawing()
+    private static func resolvedInk(_ requested: NSColor?, fixed: Bool, appearance: NSAppearance) -> NSColor {
+        let base = requested ?? .white
+        guard !fixed, !isDarkMenuBar(appearance) else { return base }
+        return isBright(base) ? Theme.hex(0x111A1F) : base
     }
 
-    private static func resolvedInk(_ requested: NSColor?, fixed: Bool) -> NSColor {
-        let base = requested ?? .white
-        // 菜单栏跟随系统外观，而不是 App 内强制的外观。
-        // 用 NSAppearance.currentDrawing() / status button.effectiveAppearance 会被
-        // App 的“浅色/深色”设置带偏，导致系统深色菜单栏上出现黑图标。
-        let systemIsDark = UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
-        guard !fixed, !systemIsDark else { return base }
-        return isBright(base) ? Theme.hex(0x111A1F) : base
+    /// 状态栏按钮的 effectiveAppearance 可能是 vibrantDark/vibrantLight；
+    /// `bestMatch(from: [.darkAqua, .aqua])` 不一定能识别，必须显式判断。
+    private static func isDarkMenuBar(_ appearance: NSAppearance) -> Bool {
+        switch appearance.name {
+        case .darkAqua, .vibrantDark:
+            return true
+        case .aqua, .vibrantLight:
+            return false
+        default:
+            return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        }
     }
 
     private static func isBright(_ color: NSColor) -> Bool {
@@ -128,9 +134,9 @@ enum MenuBarIcon {
         severity: QuotaSeverity,
         ink: NSColor,
         scale: CGFloat,
-        fixedInk: Bool
+        fixedInk: Bool,
+        appearance: NSAppearance
     ) {
-        let appearance = fixedInk ? Theme.currentAppearance : Self.systemMenuBarAppearance
         let ringColor = severity.color.resolvedForAppearance(appearance)
         let line: CGFloat = max(1.25, rect.width * 0.085)
         let center = NSPoint(x: rect.midX, y: rect.midY)
