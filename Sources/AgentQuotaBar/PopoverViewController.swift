@@ -15,6 +15,7 @@ final class QuotaPopoverViewController: NSViewController {
     private let service: QuotaService
     var onConfigure: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onRefresh: (() -> Void)?
     var onCheckin: (() -> Void)?
     var onToggleAppearance: (() -> Void)?
     var onReorder: (([String]) -> Void)?
@@ -407,7 +408,7 @@ final class QuotaPopoverViewController: NSViewController {
         }
     }
 
-    @objc private func refreshTapped() { service.refresh() }
+    @objc private func refreshTapped() { onRefresh?() }
     @objc private func settingsTapped() { onOpenSettings?() }
     @objc private func quitTapped() { NSApplication.shared.terminate(nil) }
 }

@@ -12,8 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private let service = QuotaService()
     private lazy var checkin = CheckinService(service: service)
-    private var timer: Timer?
-    private var deepSeekTimer: Timer?
+    private var scheduler: RefreshScheduler!
     private var checkinTimer: Timer?
     private var offlineTimer: Timer?
     private var appearanceTimer: Timer?
@@ -61,6 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.closePopover()
             self?.openSettings()
         }
+        popoverController.onRefresh = { [weak self] in
+            self?.scheduler.refreshNow()
+        }
         popoverController.onCheckin = { [weak self] in
             self?.checkin.runNow(manual: true)
         }
@@ -88,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         networkMonitor.onChange = { [weak self] online in
             guard let self else { return }
             if online && self.service.isOffline {
-                self.service.refresh()
+                self.scheduler.refreshNow()
             }
         }
 
@@ -99,31 +101,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         checkin.onUpdate = { [weak self] in
             self?.refreshCheckinUI()
         }
+        checkin.onRequestRefresh = { [weak self] in
+            self?.scheduler.refreshNow()
+        }
         checkinTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
             self?.checkin.runIfNeeded()
         }
         if let checkinTimer { RunLoop.main.add(checkinTimer, forMode: .common) }
 
-        // DeepSeek 余额下降需要更高频采样，才能覆盖外部调用产生的消费。
-        let deepSeekTimer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let interval = TimeInterval(self.service.config.refreshSeconds)
-            if let lastFull = self.service.lastFullRefreshAt,
-               Date().timeIntervalSince(lastFull) < interval - 5 {
-                self.service.refresh(only: "deepseek")
-            } else {
-                // 全量刷新到期时优先走全量；否则 DeepSeek 60s 定时器会一直
-                // 抢在 60s 全量前面，Codex/OpenCode 永远拿不到新数据。
-                self.service.refresh()
-            }
-        }
-        RunLoop.main.add(deepSeekTimer, forMode: .common)
-        self.deepSeekTimer = deepSeekTimer
-
+        scheduler = RefreshScheduler(service: service)
         render()
         refreshCheckinUI()
-        service.refresh()
-        scheduleTimer()
+        scheduler.start()
         // 状态栏按钮刚挂上时 effectiveAppearance 还是 VibrantLight，
         // 系统菜单栏稍后才切换成 VibrantDark；补两次重绘，避免首屏黑图标。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.render() }
@@ -399,7 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if service.isOffline {
             guard offlineTimer == nil else { return }
             let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
-                self?.service.refresh()
+                self?.scheduler.refreshNow()
             }
             RunLoop.main.add(timer, forMode: .common)
             offlineTimer = timer
@@ -407,15 +396,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             offlineTimer?.invalidate()
             offlineTimer = nil
         }
-    }
-
-    private func scheduleTimer() {
-        timer?.invalidate()
-        let timer = Timer(timeInterval: TimeInterval(service.config.refreshSeconds), repeats: true) { [weak self] _ in
-            self?.service.refresh()
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
     }
 
     private func render() {
@@ -692,8 +672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func handleSystemWake(_ notification: Notification) {
         log("system wake / session active; refreshing")
-        scheduleTimer()
-        service.refresh()
+        scheduler.refreshNow()
     }
 
     @objc private func statusItemClicked() {
@@ -709,7 +688,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 || (service.snapshot?.updatedDate.map {
                     Date().timeIntervalSince($0) > TimeInterval(service.config.refreshSeconds)
                 } ?? true) {
-                service.refresh()
+                scheduler.refreshNow()
             }
             showPopover()
         }
@@ -774,7 +753,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc func refreshNow() {
-        service.refresh()
+        scheduler.refreshNow()
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -795,8 +774,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 service: service,
                 checkin: checkin,
                 onSaved: { [weak self] in
-                    self?.scheduleTimer()
-                    self?.service.refresh()
+                    self?.scheduler.intervalsChanged()
                 },
                 onOpenSetup: { [weak self] provider in
                     self?.openSetup(provider: provider)
@@ -824,7 +802,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return
         }
         let controller = SetupWindowController(provider: provider, service: service) { [weak self] in
-            self?.service.refresh()
+            self?.scheduler.refreshNow()
         }
         controller.onClose = { [weak self] in
             self?.setupControllers[provider] = nil

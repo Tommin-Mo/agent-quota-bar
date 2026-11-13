@@ -6,6 +6,7 @@ final class CheckinService {
     private let service: QuotaService
     private var running = false
     var onUpdate: (() -> Void)?
+    var onRequestRefresh: (() -> Void)?
 
     init(service: QuotaService) {
         self.service = service
@@ -105,7 +106,11 @@ final class CheckinService {
                 try? self.config.save()
                 self.onUpdate?()
                 if !incomplete || manual {
-                    self.service.refresh()
+                    if let onRequestRefresh = self.onRequestRefresh {
+                        onRequestRefresh()
+                    } else {
+                        self.service.refresh()
+                    }
                 }
                 completion?(report)
             case .failure(let error):

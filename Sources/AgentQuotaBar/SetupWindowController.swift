@@ -425,7 +425,6 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
                 try data.write(to: destination, options: .atomic)
                 try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
                 self.showStatus("✓ 已导入 Codex 登录态，正在重新检测", color: .systemGreen)
-                self.service.refresh()
                 self.onSaved()
             } catch {
                 self.showStatus("导入失败：\(error.localizedDescription)", color: .systemRed)
