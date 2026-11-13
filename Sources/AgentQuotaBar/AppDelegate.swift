@@ -695,6 +695,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         refresh.target = self
         menu.addItem(refresh)
 
+        let display = NSMenuItem(title: "菜单栏显示", action: nil, keyEquivalent: "")
+        display.submenu = menuBarProviderMenu()
+        menu.addItem(display)
+
         if !checkin.hasCheckedInToday {
             let checkinItem = NSMenuItem(
                 title: "一键签到 Trae + WorkBuddy",
@@ -729,6 +733,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         DispatchQueue.main.async { self.statusItem.menu = nil }
+    }
+
+    private func menuBarProviderMenu() -> NSMenu {
+        let menu = NSMenu()
+        let mode = service.config.string("menuBarMode", default: "auto")
+        let current = service.config.string("menuBarProvider", default: "auto")
+
+        let auto = NSMenuItem(title: "自动（最近使用）", action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
+        auto.target = self
+        auto.representedObject = "auto"
+        auto.state = mode == "auto" ? .on : .off
+        menu.addItem(auto)
+        menu.addItem(.separator())
+
+        for id in ["codex", "opencode", "deepseek", "workbuddy", "trae"] {
+            let style = ProviderStyles.style(for: id)
+            let item = NSMenuItem(title: style.shortName, action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
+            item.state = (mode == "fixed" && current == id) ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func chooseMenuBarProvider(_ sender: NSMenuItem) {
+        let value = sender.representedObject as? String ?? "auto"
+        if value == "auto" {
+            service.config.set("menuBarMode", "auto")
+        } else {
+            service.config.set("menuBarMode", "fixed")
+            service.config.set("menuBarProvider", value)
+        }
+        do {
+            try service.config.save()
+        } catch {
+            log("save menu bar provider failed: \(error)")
+        }
+        activeProviderID = value == "auto" ? nil : value
+        lastUsage.removeAll()
+        pendingUsage = nil
+        render()
     }
 
     @objc func checkinNowMenu() {
