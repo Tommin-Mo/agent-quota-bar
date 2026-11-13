@@ -17,7 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var offlineTimer: Timer?
     private var appearanceTimer: Timer?
     private var lastStatusAppearanceName: String?
-    private var lastCodexActivity: Date?
     private lazy var networkMonitor = NetworkMonitor()
     private var popoverController: QuotaPopoverViewController!
     private var settingsController: SettingsWindowController?
@@ -26,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var lastUsage: [String: ProviderUsageSnapshot] = [:]
     private var lastSwitchAt = Date.distantPast
     private var lastMenuBarMode: String?
+    private var pendingUsage: (id: String, at: Date, magnitude: Double)?
     private let switchCooldown: TimeInterval = 10
     private var didPopoverSnapshot = false
     private var didStatusSnapshot = false
@@ -537,6 +537,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         var balance: Double?
         /// 最近一次检测到真实使用的快照时间；冷却期间也不会丢，冷却结束后补切。
         var lastUsedAt: Date?
+        /// 同一轮全量快照里多家都变化时，用变化幅度做 tie-break。
+        var magnitude: Double = 0
     }
 
     /// 最近使用只看“真的消耗”：used 上升、consumed 增加、余额下降。
@@ -558,46 +560,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         current.consumed = provider.consumed
         current.balance = provider.balance
         current.lastUsedAt = lastUsage[provider.id]?.lastUsedAt
+        current.magnitude = lastUsage[provider.id]?.magnitude ?? 0
 
         var used = false
+        var magnitude = 0.0
         if let previous = lastUsage[provider.id] {
             for (label, value) in current.percents {
                 if let old = previous.percents[label], value > old + 0.0001 {
                     used = true
-                    break
+                    magnitude = max(magnitude, value - old)
                 }
             }
-            if !used, let consumed = current.consumed, let old = previous.consumed,
+            if let consumed = current.consumed, let old = previous.consumed,
                consumed > old + 0.0001 {
                 used = true
+                magnitude = max(magnitude, consumed - old)
             }
-            if !used, let balance = current.balance, let old = previous.balance,
+            if let balance = current.balance, let old = previous.balance,
                balance < old - 0.0001 {
                 used = true
+                magnitude = max(magnitude, old - balance)
             }
+        }
+        if used {
+            current.magnitude = magnitude
         }
         if used {
             current.lastUsedAt = timestamp
         }
         lastUsage[provider.id] = current
         return used
-    }
-
-    /// Codex 的额度百分比只按整数变化，短时间内使用不一定跨 1%；
-    /// 这里用本地 ~/.codex 日志的 mtime 作为“最近确实在用 Codex”的补充信号。
-    private func codexLocalActivityDate() -> Date? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let paths = [
-            ".codex/logs_2.sqlite",
-            ".codex/logs_2.sqlite-wal",
-            ".codex/thread_history_1.sqlite",
-            ".codex/thread_history_1.sqlite-wal",
-        ]
-        return paths.compactMap { relative -> Date? in
-            let url = home.appendingPathComponent(relative)
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) else { return nil }
-            return attrs[.modificationDate] as? Date
-        }.max()
     }
 
     private func updateActiveProvider(snapshot: QuotaSnapshot, mode: String) {
@@ -608,6 +600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             if mode == "auto" {
                 activeProviderID = nil
                 lastUsage.removeAll()
+                pendingUsage = nil
                 lastSwitchAt = .distantPast
             }
         }
@@ -624,33 +617,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let now = Date()
         let usageTimestamp = snapshot.updatedDate ?? now
         for provider in candidates where provider.isUsable {
-            detectUsage(provider, at: usageTimestamp)
-        }
-
-        if let activity = codexLocalActivityDate(),
-           lastCodexActivity == nil || activity > lastCodexActivity! {
-            lastCodexActivity = activity
-            if var current = lastUsage["codex"] {
-                current.lastUsedAt = now
-                lastUsage["codex"] = current
-            }
-        }
-
-        if mode == "auto" {
-            // 选“最近一次真实使用”的那家；冷却期间只是不切，记录不会丢。
-            var latestUsed: (id: String, at: Date)?
-            for provider in candidates {
-                // 不能要求 usedAt > lastSwitchAt：活动可能发生在冷却/上一次切换之前，
-                // 到达时已经“过期”，会被永久吞掉，菜单栏就卡在上一家。
-                guard let usedAt = lastUsage[provider.id]?.lastUsedAt else { continue }
-                if latestUsed == nil || usedAt > latestUsed!.at {
-                    latestUsed = (provider.id, usedAt)
+            if detectUsage(provider, at: usageTimestamp) {
+                let magnitude = lastUsage[provider.id]?.magnitude ?? 0
+                // 只保留一个待切换事件：同一轮多家都变化时，变化幅度大的优先。
+                if pendingUsage == nil
+                    || usageTimestamp > pendingUsage!.at
+                    || (usageTimestamp == pendingUsage!.at && magnitude > pendingUsage!.magnitude) {
+                    pendingUsage = (provider.id, usageTimestamp, magnitude)
                 }
             }
-            if let latestUsed, now.timeIntervalSince(lastSwitchAt) >= switchCooldown {
-                activeProviderID = latestUsed.id
-                lastSwitchAt = now
-            }
+        }
+
+        if mode == "auto", let pendingUsage,
+           now.timeIntervalSince(lastSwitchAt) >= switchCooldown {
+            // 冷却期间只暂存，不丢；到点再切，切完清空，避免旧事件反复触发。
+            activeProviderID = pendingUsage.id
+            lastSwitchAt = now
+            self.pendingUsage = nil
         }
 
         if activeProviderID == nil || snapshot.provider(withID: activeProviderID!) == nil {
