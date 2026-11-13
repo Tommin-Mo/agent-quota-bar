@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var offlineTimer: Timer?
     private var appearanceTimer: Timer?
     private var lastStatusAppearanceName: String?
+    private var lastCodexActivity: Date?
     private lazy var networkMonitor = NetworkMonitor()
     private var popoverController: QuotaPopoverViewController!
     private var settingsController: SettingsWindowController?
@@ -593,6 +594,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return used
     }
 
+    /// Codex 的额度百分比只按整数变化，短时间内使用不一定跨 1%；
+    /// 这里用本地 ~/.codex 日志的 mtime 作为“最近确实在用 Codex”的补充信号。
+    private func codexLocalActivityDate() -> Date? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let paths = [
+            ".codex/logs_2.sqlite",
+            ".codex/logs_2.sqlite-wal",
+            ".codex/thread_history_1.sqlite",
+            ".codex/thread_history_1.sqlite-wal",
+        ]
+        return paths.compactMap { relative -> Date? in
+            let url = home.appendingPathComponent(relative)
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) else { return nil }
+            return attrs[.modificationDate] as? Date
+        }.max()
+    }
+
     private func updateActiveProvider(snapshot: QuotaSnapshot, mode: String) {
         let candidates = snapshot.providers.filter { $0.status != "disabled" }
 
@@ -620,13 +638,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             detectUsage(provider, at: usageTimestamp)
         }
 
+        if let activity = codexLocalActivityDate(),
+           lastCodexActivity == nil || activity > lastCodexActivity! {
+            lastCodexActivity = activity
+            if var current = lastUsage["codex"] {
+                current.lastUsedAt = now
+                lastUsage["codex"] = current
+            }
+        }
+
         if mode == "auto" {
             // 选“最近一次真实使用”的那家；冷却期间只是不切，记录不会丢。
             var latestUsed: (id: String, at: Date)?
             for provider in candidates {
-                guard let usedAt = lastUsage[provider.id]?.lastUsedAt, usedAt > lastSwitchAt else {
-                    continue
-                }
+                // 不能要求 usedAt > lastSwitchAt：活动可能发生在冷却/上一次切换之前，
+                // 到达时已经“过期”，会被永久吞掉，菜单栏就卡在上一家。
+                guard let usedAt = lastUsage[provider.id]?.lastUsedAt else { continue }
                 if latestUsed == nil || usedAt > latestUsed!.at {
                     latestUsed = (provider.id, usedAt)
                 }
