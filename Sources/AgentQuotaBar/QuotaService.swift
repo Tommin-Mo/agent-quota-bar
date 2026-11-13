@@ -23,6 +23,8 @@ final class QuotaService {
     private(set) var errorMessage: String?
     private(set) var isRefreshing = false
     private(set) var isOffline = false
+    /// 最近一次全量刷新成功的时间；DeepSeek 60s 定时器据此避免和全量刷新抢锁。
+    private(set) var lastFullRefreshAt: Date?
 
     let config = ConfigStore()
     var onChange: (() -> Void)?
@@ -133,6 +135,7 @@ final class QuotaService {
             providers: incoming.providers
         )
         snapshot = merged
+        lastFullRefreshAt = Date()
         UsageTracker.shared.record(snapshot: merged)
         saveCache(merged)
     }

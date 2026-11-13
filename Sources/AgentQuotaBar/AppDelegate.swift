@@ -106,7 +106,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         // DeepSeek 余额下降需要更高频采样，才能覆盖外部调用产生的消费。
         let deepSeekTimer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
-            self?.service.refresh(only: "deepseek")
+            guard let self else { return }
+            let interval = TimeInterval(self.service.config.refreshSeconds)
+            if let lastFull = self.service.lastFullRefreshAt,
+               Date().timeIntervalSince(lastFull) < interval - 5 {
+                self.service.refresh(only: "deepseek")
+            } else {
+                // 全量刷新到期时优先走全量；否则 DeepSeek 60s 定时器会一直
+                // 抢在 60s 全量前面，Codex/OpenCode 永远拿不到新数据。
+                self.service.refresh()
+            }
         }
         RunLoop.main.add(deepSeekTimer, forMode: .common)
         self.deepSeekTimer = deepSeekTimer
