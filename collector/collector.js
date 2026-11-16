@@ -274,6 +274,192 @@ function http(url, opts = {}) {
   throw new Error(firstError || lastError || '网络请求失败');
 }
 
+// ---------------------------------------------------------------- 服务状态（可选）
+
+// 状态页只用于可选的健康提示：任何失败都静默省略字段，绝不影响额度结果。
+const STATUS_TIMEOUT_SECONDS = 2;
+const STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
+const STATUS_DEFAULT_DESCRIPTION = {
+  ok: 'All systems operational',
+  degraded: 'Degraded performance',
+  outage: 'Service outage',
+};
+const SERVICE_STATUS_SOURCES = Object.freeze({
+  codex: { url: 'https://status.openai.com/api/v2/status.json', format: 'statuspage' },
+  opencode: { url: 'https://status.opencode.ai/api/status', format: 'opencode' },
+  deepseek: { url: 'https://status.deepseek.com/api/widget/v1/summary.json', format: 'flashduty' },
+});
+
+// 进程内缓存：同一轮/同一进程内不重复请求；失败也缓存，避免反复拖慢采集。
+const STATUS_CACHE = new Map();
+
+const STATUSPAGE_INDICATORS = {
+  none: 'ok',
+  minor: 'degraded',
+  major: 'outage',
+  critical: 'outage',
+  maintenance: 'degraded',
+};
+const OPENCODE_STATUSES = {
+  operational: 'ok',
+  degraded: 'degraded',
+  outage: 'outage',
+  maintenance: 'degraded',
+};
+const FLASHDUTY_STATUSES = {
+  operational: 'ok',
+  degraded: 'degraded',
+  partial_outage: 'outage',
+  full_outage: 'outage',
+  maintenance: 'degraded',
+};
+
+/** 只保留单行可打印描述，限制长度，避免状态文案破坏输出/界面。 */
+function normalizeStatusText(value, maxLength = 160) {
+  return String(value || '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function statusDescription(state, value) {
+  return normalizeStatusText(value) || STATUS_DEFAULT_DESCRIPTION[state];
+}
+
+function parseStatuspageStatus(payload) {
+  const status = payload && typeof payload === 'object' ? payload.status : null;
+  if (!status || typeof status !== 'object') return null;
+  const indicator = normalizeStatusText(status.indicator, 32).toLowerCase();
+  const state = STATUSPAGE_INDICATORS[indicator];
+  if (!state) return null;
+  return {
+    serviceStatus: state,
+    serviceStatusDescription: statusDescription(state, status.description),
+  };
+}
+
+function parseOpenCodeStatus(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const components = Array.isArray(payload.components) ? payload.components : [];
+  const statusOf = (value) => OPENCODE_STATUSES[normalizeStatusText(value, 32).toLowerCase()];
+  let state = statusOf(payload.status);
+  if (!state && components.length) {
+    const states = components.map((component) => statusOf(component && component.status));
+    if (states.includes('outage')) state = 'outage';
+    else if (states.includes('degraded')) state = 'degraded';
+    else if (states.includes('ok')) state = 'ok';
+  }
+  if (!state) return null;
+
+  let description = '';
+  if (state !== 'ok') {
+    const incidents = Array.isArray(payload.incidents) ? payload.incidents : [];
+    const active = incidents.find((incident) => incident && !incident.resolvedAt);
+    if (active) {
+      description = normalizeStatusText([active.service, active.reason].filter(Boolean).join(' · '), 160);
+    }
+    if (!description) {
+      const affected = components
+        .filter((component) => {
+          const componentState = statusOf(component && component.status);
+          return componentState && componentState !== 'ok';
+        })
+        .map((component) => normalizeStatusText(component.service, 40))
+        .filter(Boolean);
+      if (affected.length) {
+        description = `${affected.slice(0, 3).join(', ')} ${state === 'outage' ? 'outage' : 'degraded'}`;
+      }
+    }
+  }
+  if (payload.stale === true) {
+    description = normalizeStatusText(`${description || STATUS_DEFAULT_DESCRIPTION[state]} · stale`);
+  }
+  return {
+    serviceStatus: state,
+    serviceStatusDescription: statusDescription(state, description),
+  };
+}
+
+function parseFlashdutyStatus(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const overall = payload.overall && typeof payload.overall === 'object' ? payload.overall : null;
+  const status = normalizeStatusText(overall && overall.status, 32).toLowerCase();
+  const state = FLASHDUTY_STATUSES[status];
+  if (!state) return null;
+
+  let description = '';
+  if (state !== 'ok') {
+    const incidents = Array.isArray(payload.ongoing_incidents) ? payload.ongoing_incidents : [];
+    const active = incidents.find((incident) => incident && incident.title);
+    if (active) description = normalizeStatusText(active.title);
+    if (!description) {
+      const maintenances = Array.isArray(payload.in_progress_maintenances) ? payload.in_progress_maintenances : [];
+      const maintenance = maintenances.find((item) => item && item.title);
+      if (maintenance) description = normalizeStatusText(maintenance.title);
+    }
+  }
+  return {
+    serviceStatus: state,
+    serviceStatusDescription: statusDescription(state, description),
+  };
+}
+
+/** 解析任一状态源；返回 { serviceStatus: ok|degraded|outage, serviceStatusDescription } 或 null。 */
+function parseServiceStatus(providerId, payload) {
+  const source = SERVICE_STATUS_SOURCES[providerId];
+  if (!source) return null;
+  if (source.format === 'opencode') return parseOpenCodeStatus(payload);
+  if (source.format === 'flashduty') return parseFlashdutyStatus(payload);
+  return parseStatuspageStatus(payload);
+}
+
+function fetchStatusPayload(url) {
+  const response = http(url, { timeout: STATUS_TIMEOUT_SECONDS });
+  if (response.status !== 200 || !response.json) return null;
+  return response.json;
+}
+
+/**
+ * 读取 provider 状态（带进程内缓存）。options 仅供测试注入 fetchJson/now/ttl/cache。
+ * 任何异常都返回 null，绝不向上抛。
+ */
+function getProviderHealth(providerId, options = {}) {
+  const source = SERVICE_STATUS_SOURCES[providerId];
+  if (!source) return null;
+  const now = typeof options.now === 'number' ? options.now : Date.now();
+  const ttl = typeof options.ttlMs === 'number' ? options.ttlMs : STATUS_CACHE_TTL_MS;
+  const useCache = options.cache !== false;
+  if (useCache) {
+    const cached = STATUS_CACHE.get(providerId);
+    const age = cached ? now - cached.at : -1;
+    if (cached && age >= 0 && age < ttl) return cached.value ? { ...cached.value } : null;
+  }
+  let value = null;
+  try {
+    const fetchJson = options.fetchJson || fetchStatusPayload;
+    value = parseServiceStatus(providerId, fetchJson(source.url));
+  } catch {
+    value = null;
+  }
+  if (useCache) STATUS_CACHE.set(providerId, { at: now, value });
+  return value ? { ...value } : null;
+}
+
+/** 把健康字段附到 provider 结果上；失败时原样返回，保证额度结果不受影响。 */
+function attachProviderHealth(result, providerId, options = {}) {
+  if (!result || !providerId) return result;
+  try {
+    // 未配置的 provider 不请求状态页，避免无意义的延迟。
+    if (result.status === 'disabled' || result.status === 'unconfigured') return result;
+    const health = getProviderHealth(providerId, options);
+    if (!health) return result;
+    return { ...result, ...health };
+  } catch {
+    return result;
+  }
+}
+
 function pick(obj, ...paths) {
   for (const p of paths) {
     const parts = Array.isArray(p) ? p : p.split('.');
@@ -1755,12 +1941,13 @@ function main() {
       results.push(provider(id, NAMES[id], 'disabled', [], { detail: '已停用' }));
       continue;
     }
+    let result;
     try {
-      const result = fn(cfg);
-      results.push({ ...result, name: result.name || NAMES[id] });
+      result = fn(cfg);
     } catch (e) {
-      results.push(failed(id, NAMES[id], e.message || String(e)));
+      result = failed(id, NAMES[id], e.message || String(e));
     }
+    results.push({ ...attachProviderHealth(result, id), name: result.name || NAMES[id] });
   }
 
   const output = {
@@ -1788,5 +1975,8 @@ module.exports = {
   decryptChromeCookieValue,
   readChromeCookiesForHost,
   openCodeCostSummary,
+  parseServiceStatus,
+  getProviderHealth,
+  attachProviderHealth,
   CURL_ARGS,
 };

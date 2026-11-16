@@ -43,6 +43,8 @@ struct ProviderStatus: Codable, Identifiable {
     let subscriptionWillRenew: Bool?
     /// OpenCode 等本地可算成本的 provider 附加的成本汇总（可选，旧 collector 不返回）。
     let cost: ProviderCost?
+    let serviceStatus: String?
+    let serviceStatusDescription: String?
 
     var isUsable: Bool { status == "ok" || status == "warn" }
 }

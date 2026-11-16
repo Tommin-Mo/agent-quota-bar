@@ -680,6 +680,16 @@ final class ProviderRowView: NSView {
                 nameRow.addArrangedSubview(checkin)
             }
         }
+        if let serviceStatus = provider.serviceStatus, serviceStatus != "ok" {
+            let statusLabel = label(
+                serviceStatus == "outage" ? "服务故障" : "服务降级",
+                size: 10,
+                weight: .medium,
+                color: serviceStatus == "outage" ? .systemRed : .systemOrange
+            )
+            statusLabel.toolTip = provider.serviceStatusDescription
+            nameRow.addArrangedSubview(statusLabel)
+        }
         if provider.status == "warn" && isExhausted(provider) {
             nameRow.addArrangedSubview(label("已用尽", size: 10, weight: .medium, color: .systemRed))
         }

@@ -247,6 +247,7 @@ final class SettingsWindowController: NSWindowController {
     private var visibilitySwitches: [String: AccentSwitch] = [:]
     private var checkinDetailStatusLabels: [String: NSTextField] = [:]
     private var accountPopups: [String: NSPopUpButton] = [:]
+    private var accountManager: AccountManagerWindowController?
 
     // MARK: - 可选 UI 数据钩子（AccountStore / 合并图标后端未落地时保持隐藏）
     /// providerID -> 账户列表；为空/只有一个账户时该行不显示选择器。
@@ -1379,7 +1380,16 @@ final class SettingsWindowController: NSWindowController {
         }
         configure.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let row = NSStackView(views: [avatar, info, spacer, autoCookie, account, visibility, configure])
+        let manageAccounts = NSButton(title: "账户…", target: self, action: #selector(manageAccountsTapped(_:)))
+        manageAccounts.bezelStyle = .inline
+        manageAccounts.isBordered = false
+        manageAccounts.font = .systemFont(ofSize: 11, weight: .medium)
+        manageAccounts.contentTintColor = Theme.secondary
+        manageAccounts.identifier = NSUserInterfaceItemIdentifier(id)
+        manageAccounts.setAccessibilityLabel("管理 \(style.shortName) 账户")
+        manageAccounts.toolTip = "添加、编辑、删除或切换账户"
+
+        let row = NSStackView(views: [avatar, info, spacer, autoCookie, account, visibility, manageAccounts, configure])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 11
@@ -1450,6 +1460,21 @@ final class SettingsWindowController: NSWindowController {
         }
         hintLabel.stringValue = "已切换 \(ProviderStyles.style(for: id).shortName) 账户：\(accountLabel)"
         hintLabel.textColor = Theme.secondary
+    }
+
+    @objc private func manageAccountsTapped(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue, let window, accountManager == nil else { return }
+        let manager = AccountManagerWindowController(provider: id, store: accountStore) { [weak self] in
+            guard let self else { return }
+            self.reloadAccounts()
+            self.service.refresh()
+        }
+        guard let sheet = manager.window else { return }
+        accountManager = manager
+        window.beginSheet(sheet) { [weak self] _ in
+            self?.accountManager = nil
+            self?.reloadAccounts()
+        }
     }
 
     // MARK: - 导航
@@ -1731,6 +1756,512 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func openConfig() {
         NSWorkspace.shared.open(service.config.url)
+    }
+}
+
+// MARK: - 账户管理窗口
+
+/// 以 sheet 形式管理某个 provider 的多个账户：添加（名称 + 凭据字段）、编辑、
+/// 删除、设为当前。凭据字段完全来自 `AccountStore.credentialKeysByProvider`，
+/// 不假设任何 provider 的扁平字段。
+final class AccountManagerWindowController: NSWindowController {
+    private let provider: String
+    private let store: AccountStore
+    private let onChanged: () -> Void
+
+    private let container = ThemedSurfaceView()
+    private let scrollView = NSScrollView()
+    private let contentStack = NSStackView()
+    private let listStack = NSStackView()
+    private let formContainer = ThemedSurfaceView()
+    private let formStack = NSStackView()
+    private let formTitleLabel = NSTextField(labelWithString: "")
+    private let labelField = NSTextField()
+    private let identityField = NSTextField()
+    private var credentialFields: [String: NSTextField] = [:]
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let footerStatusLabel = NSTextField(labelWithString: "")
+    private var accounts: [ProviderAccount] = []
+    private var editingAccount: ProviderAccount?
+
+    private var providerName: String { ProviderStyles.style(for: provider).shortName }
+
+    init(provider: String, store: AccountStore, onChanged: @escaping () -> Void) {
+        self.provider = provider
+        self.store = store
+        self.onChanged = onChanged
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "管理 \(ProviderStyles.style(for: provider).shortName) 账户"
+        window.isReleasedWhenClosed = false
+        window.appearance = NSApp.appearance
+        window.center()
+        super.init(window: window)
+        buildContent()
+        reload()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // MARK: 构建
+
+    private func buildContent() {
+        guard let window else { return }
+        container.frame = NSRect(x: 0, y: 0, width: 600, height: 560)
+        container.wantsLayer = true
+        container.surfaceColor = Theme.background
+        window.contentView = container
+
+        let title = label("\(providerName) 账户", size: 18, weight: .semibold)
+        let subtitle = label(
+            "凭据保存在本地配置；设为当前账号后会同步给采集器。",
+            size: 11,
+            color: Theme.secondary
+        )
+        subtitle.lineBreakMode = .byWordWrapping
+        subtitle.maximumNumberOfLines = 2
+        let header = NSStackView(views: [title, subtitle])
+        header.orientation = .vertical
+        header.alignment = .leading
+        header.spacing = 3
+        header.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(header)
+
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(scrollView)
+
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = document
+
+        contentStack.orientation = .vertical
+        contentStack.alignment = .leading
+        contentStack.spacing = 10
+        contentStack.detachesHiddenViews = true
+        contentStack.setContentHuggingPriority(.required, for: .vertical)
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(contentStack)
+
+        listStack.orientation = .vertical
+        listStack.alignment = .leading
+        listStack.spacing = 8
+        listStack.detachesHiddenViews = true
+        listStack.translatesAutoresizingMaskIntoConstraints = false
+
+        buildForm()
+
+        contentStack.addArrangedSubview(listStack)
+        contentStack.addArrangedSubview(formContainer)
+        listStack.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+        formContainer.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
+
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: container.topAnchor, constant: 20),
+            header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            header.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+
+            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+
+            document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            document.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            document.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.heightAnchor),
+
+            contentStack.topAnchor.constraint(equalTo: document.topAnchor, constant: 4),
+            contentStack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 2),
+            contentStack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -2),
+            contentStack.bottomAnchor.constraint(lessThanOrEqualTo: document.bottomAnchor, constant: -4),
+        ])
+        let fit = document.heightAnchor.constraint(
+            equalTo: contentStack.heightAnchor,
+            constant: 12
+        )
+        fit.priority = .defaultHigh
+        fit.isActive = true
+
+        let add = NSButton(title: "添加账户", target: self, action: #selector(addTapped))
+        add.bezelStyle = .rounded
+        add.bezelColor = Theme.accent
+        add.font = .systemFont(ofSize: 12, weight: .medium)
+        add.setAccessibilityLabel("添加 \(providerName) 账户")
+
+        let done = NSButton(title: "完成", target: self, action: #selector(doneTapped))
+        done.bezelStyle = .rounded
+
+        footerStatusLabel.font = .systemFont(ofSize: 10.5)
+        footerStatusLabel.textColor = Theme.secondary
+        footerStatusLabel.lineBreakMode = .byTruncatingTail
+        footerStatusLabel.setAccessibilityLabel("账户管理状态")
+        footerStatusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        footerStatusLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+
+        let footerSpacer = NSView()
+        footerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let footer = NSStackView(views: [add, footerStatusLabel, footerSpacer, done])
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+        footer.spacing = 10
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(footer)
+
+        NSLayoutConstraint.activate([
+            footer.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            footer.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            footer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
+            footer.heightAnchor.constraint(equalToConstant: 28),
+            scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
+        ])
+    }
+
+    private func buildForm() {
+        formContainer.wantsLayer = true
+        formContainer.surfaceColor = Theme.surfaceAlt
+        formContainer.surfaceBorderColor = Theme.separator
+        formContainer.surfaceBorderWidth = 1
+        formContainer.layer?.cornerRadius = 10
+        formContainer.layer?.cornerCurve = .continuous
+        formContainer.translatesAutoresizingMaskIntoConstraints = false
+        formContainer.isHidden = true
+
+        formStack.orientation = .vertical
+        formStack.alignment = .leading
+        formStack.spacing = 8
+        formStack.translatesAutoresizingMaskIntoConstraints = false
+        formContainer.addSubview(formStack)
+        NSLayoutConstraint.activate([
+            formStack.topAnchor.constraint(equalTo: formContainer.topAnchor, constant: 14),
+            formStack.bottomAnchor.constraint(equalTo: formContainer.bottomAnchor, constant: -14),
+            formStack.leadingAnchor.constraint(equalTo: formContainer.leadingAnchor, constant: 14),
+            formStack.trailingAnchor.constraint(equalTo: formContainer.trailingAnchor, constant: -14),
+        ])
+
+        formTitleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        formTitleLabel.textColor = Theme.text
+        formStack.addArrangedSubview(formTitleLabel)
+
+        labelField.font = .systemFont(ofSize: 12)
+        labelField.placeholderString = "例如：工作账号"
+        labelField.setAccessibilityLabel("账户名称")
+        labelField.translatesAutoresizingMaskIntoConstraints = false
+        labelField.widthAnchor.constraint(equalToConstant: 330).isActive = true
+        formStack.addArrangedSubview(formRow("名称", labelField))
+
+        identityField.font = .systemFont(ofSize: 12)
+        identityField.placeholderString = "邮箱 / 用户名（可选）"
+        identityField.setAccessibilityLabel("账户标识")
+        identityField.translatesAutoresizingMaskIntoConstraints = false
+        identityField.widthAnchor.constraint(equalToConstant: 330).isActive = true
+        formStack.addArrangedSubview(formRow("账户标识", identityField))
+
+        for key in AccountStore.credentialKeys(for: provider) {
+            let field: NSTextField = Self.isSecret(key) ? NSSecureTextField() : NSTextField()
+            field.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular)
+            field.placeholderString = Self.placeholder(for: key)
+            field.setAccessibilityLabel(Self.displayName(for: key))
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(equalToConstant: 330).isActive = true
+            credentialFields[key] = field
+            formStack.addArrangedSubview(formRow(Self.displayName(for: key), field))
+        }
+
+        statusLabel.font = .systemFont(ofSize: 10.5)
+        statusLabel.textColor = Theme.secondary
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setAccessibilityLabel("账户操作状态")
+        formStack.addArrangedSubview(statusLabel)
+
+        let save = NSButton(title: "保存账户", target: self, action: #selector(saveTapped))
+        save.bezelStyle = .rounded
+        save.bezelColor = Theme.accent
+        save.font = .systemFont(ofSize: 12, weight: .medium)
+        save.keyEquivalent = "\r"
+
+        let cancel = NSButton(title: "取消", target: self, action: #selector(cancelTapped))
+        cancel.bezelStyle = .rounded
+
+        let buttons = NSStackView(views: [save, cancel])
+        buttons.orientation = .horizontal
+        buttons.spacing = 10
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        formStack.addArrangedSubview(buttons)
+    }
+
+    private func formRow(_ title: String, _ control: NSView) -> NSView {
+        let titleLabel = label(title, size: 11, color: Theme.secondary)
+        titleLabel.setContentHuggingPriority(.required, for: .horizontal)
+        titleLabel.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        let row = NSStackView(views: [titleLabel, control])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        return row
+    }
+
+    // MARK: 列表
+
+    private func reload() {
+        accounts = store.accounts(for: provider)
+        listStack.arrangedSubviews.forEach {
+            listStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        let activeID = store.activeAccountID(for: provider)
+        guard !accounts.isEmpty else {
+            let empty = label(
+                "还没有账户。点下方「添加账户」创建第一个账号。",
+                size: 11,
+                color: Theme.tertiary
+            )
+            empty.lineBreakMode = .byWordWrapping
+            empty.maximumNumberOfLines = 0
+            listStack.addArrangedSubview(empty)
+            empty.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
+            return
+        }
+        for account in accounts {
+            let card = accountCard(account, activeID: activeID)
+            listStack.addArrangedSubview(card)
+            card.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
+        }
+    }
+
+    private func accountCard(_ account: ProviderAccount, activeID: String?) -> NSView {
+        let card = ThemedSurfaceView()
+        card.wantsLayer = true
+        card.surfaceColor = Theme.surface
+        card.surfaceBorderColor = Theme.separator
+        card.surfaceBorderWidth = 1
+        card.layer?.cornerRadius = 10
+        card.layer?.cornerCurve = .continuous
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = label(account.label, size: 13, weight: .semibold)
+        var details: [String] = []
+        if let identity = account.account, !identity.isEmpty { details.append(identity) }
+        details.append(account.isLegacy ? "旧版默认账号" : account.id)
+        let subtitle = label(details.joined(separator: " · "), size: 10, color: Theme.tertiary)
+        subtitle.lineBreakMode = .byTruncatingMiddle
+
+        let info = NSStackView(views: [title, subtitle])
+        info.orientation = .vertical
+        info.alignment = .leading
+        info.spacing = 2
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        var trailing: [NSView] = []
+        if account.isLegacy {
+            trailing.append(label("旧版", size: 10, weight: .medium, color: Theme.tertiary))
+        } else {
+            if activeID == account.id {
+                trailing.append(label("当前", size: 10, weight: .semibold, color: Theme.success))
+            } else {
+                let activate = ClosureButton(title: "设为当前") { [weak self] in self?.activate(account) }
+                activate.font = .systemFont(ofSize: 11, weight: .medium)
+                activate.contentTintColor = Theme.accent
+                trailing.append(activate)
+            }
+            let edit = ClosureButton(title: "编辑") { [weak self] in self?.beginForm(editing: account) }
+            edit.font = .systemFont(ofSize: 11, weight: .medium)
+            edit.contentTintColor = Theme.secondary
+            trailing.append(edit)
+
+            let delete = ClosureButton(title: "删除") { [weak self] in self?.requestDelete(account) }
+            delete.font = .systemFont(ofSize: 11, weight: .medium)
+            delete.contentTintColor = .systemRed
+            trailing.append(delete)
+        }
+
+        let row = NSStackView(views: [info, spacer] + trailing)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            row.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+        ])
+        return card
+    }
+
+    // MARK: 表单
+
+    private func beginForm(editing account: ProviderAccount?) {
+        editingAccount = account
+        formTitleLabel.stringValue = account == nil ? "添加账户" : "编辑账户"
+        labelField.stringValue = account?.label ?? ""
+        identityField.stringValue = account?.account ?? ""
+        for (key, field) in credentialFields {
+            field.stringValue = account?.credentials[key] ?? ""
+        }
+        statusLabel.stringValue = ""
+        formContainer.isHidden = false
+        contentStack.layoutSubtreeIfNeeded()
+        window?.makeFirstResponder(labelField)
+        scrollToBottom()
+    }
+
+    private func cancelForm() {
+        editingAccount = nil
+        formContainer.isHidden = true
+        statusLabel.stringValue = ""
+        footerStatusLabel.stringValue = ""
+    }
+
+    @objc private func addTapped() {
+        beginForm(editing: nil)
+    }
+
+    @objc private func cancelTapped() {
+        cancelForm()
+    }
+
+    @objc private func saveTapped() {
+        let labelText = labelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !labelText.isEmpty else {
+            setStatus("请填写账户名称", error: true)
+            return
+        }
+        let identity = identityField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        var credentials: [String: String] = [:]
+        for (key, field) in credentialFields {
+            let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { credentials[key] = value }
+        }
+
+        do {
+            if var account = editingAccount {
+                account.label = labelText
+                account.account = identity.isEmpty ? nil : identity
+                account.credentials = credentials
+                try store.updateAccount(account, for: provider)
+            } else {
+                // Codex 允许空凭据（使用默认 auth.json / CODEX_HOME）；其他 provider 至少一项。
+                if provider != "codex", credentials.isEmpty {
+                    setStatus("请至少填写一项凭据", error: true)
+                    return
+                }
+                _ = try store.addAccount(
+                    for: provider,
+                    label: labelText,
+                    account: identity.isEmpty ? nil : identity,
+                    credentials: credentials,
+                    makeActive: true
+                )
+            }
+            editingAccount = nil
+            formContainer.isHidden = true
+            statusLabel.stringValue = "已保存"
+            statusLabel.textColor = Theme.success
+            reload()
+            onChanged()
+        } catch {
+            setStatus("保存失败：\(error.localizedDescription)", error: true)
+        }
+    }
+
+    private func activate(_ account: ProviderAccount) {
+        do {
+            _ = try store.activate(account.id, for: provider)
+            setStatus("已切换为「\(account.label)」", error: false)
+            reload()
+            onChanged()
+        } catch {
+            setStatus("切换失败：\(error.localizedDescription)", error: true)
+        }
+    }
+
+    private func requestDelete(_ account: ProviderAccount) {
+        let alert = NSAlert()
+        alert.messageText = "删除账户「\(account.label)」？"
+        alert.informativeText = "会从本地配置中移除该账户及保存的凭据，无法撤销。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            try store.removeAccount(withID: account.id, for: provider)
+            if editingAccount?.id == account.id {
+                cancelForm()
+            }
+            reload()
+            setStatus("已删除「\(account.label)」", error: false)
+            onChanged()
+        } catch {
+            setStatus("删除失败：\(error.localizedDescription)", error: true)
+        }
+    }
+
+    @objc private func doneTapped() {
+        guard let window else { return }
+        if let parent = window.sheetParent {
+            parent.endSheet(window)
+        } else {
+            close()
+        }
+    }
+
+    private func setStatus(_ text: String, error: Bool) {
+        statusLabel.stringValue = text
+        statusLabel.textColor = error ? .systemRed : Theme.success
+        footerStatusLabel.stringValue = text
+        footerStatusLabel.textColor = error ? .systemRed : Theme.success
+    }
+
+    private func scrollToBottom() {
+        guard let document = scrollView.documentView else { return }
+        document.layoutSubtreeIfNeeded()
+        let y = max(0, document.bounds.height - scrollView.contentView.bounds.height)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    // MARK: 文案
+
+    private static func displayName(for key: String) -> String {
+        switch key {
+        case "apiKey": return "API Key"
+        case "cookie": return "Console Cookie"
+        case "workspaceId": return "Workspace ID"
+        case "token": return "Access Token"
+        case "uid": return "UID"
+        case "edition": return "版本（cn/solo/sg/solo-sg）"
+        case "authPath": return "auth.json 路径"
+        case "codexHome": return "CODEX_HOME"
+        default: return key
+        }
+    }
+
+    private static func isSecret(_ key: String) -> Bool {
+        ["apiKey", "cookie", "token"].contains(key)
+    }
+
+    private static func placeholder(for key: String) -> String {
+        switch key {
+        case "apiKey": return "sk-..."
+        case "cookie": return "__Host-console_session（登录后自动写入）"
+        case "workspaceId": return "wrk_...（可选，留空自动获取）"
+        case "token": return "eyJ... 或 Bearer eyJ..."
+        case "uid": return "可选，留空自动识别"
+        case "edition": return "cn / solo / sg / solo-sg"
+        case "authPath": return "~/.codex/auth.json（留空使用默认）"
+        case "codexHome": return "~/.codex（留空使用默认）"
+        default: return ""
+        }
     }
 }
 
