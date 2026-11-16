@@ -289,7 +289,7 @@ final class SettingsWindowController: NSWindowController {
         self.onCheckin = onCheckin
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 780, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -325,16 +325,22 @@ final class SettingsWindowController: NSWindowController {
         }
         contentStack.removeFromSuperview()
 
-        let container = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 780, height: 680))
+        let container = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 820, height: 640))
         container.wantsLayer = true
         container.surfaceColor = Theme.background
 
-        let topBar = ThemedSurfaceView()
-        topBar.wantsLayer = true
-        topBar.surfaceColor = Theme.background
-        topBar.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(topBar)
-        buildTopBar(in: topBar)
+        let sidebar = ThemedSurfaceView()
+        sidebar.wantsLayer = true
+        sidebar.surfaceColor = Theme.surfaceAlt
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(sidebar)
+        buildSidebar(in: sidebar)
+
+        let sidebarLine = ThemedSurfaceView()
+        sidebarLine.wantsLayer = true
+        sidebarLine.surfaceColor = NSColor.separatorColor.withAlphaComponent(0.35)
+        sidebarLine.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(sidebarLine)
 
         let saveBar = ThemedSurfaceView()
         saveBar.wantsLayer = true
@@ -358,23 +364,28 @@ final class SettingsWindowController: NSWindowController {
         container.addSubview(scroll)
 
         NSLayoutConstraint.activate([
-            topBar.topAnchor.constraint(equalTo: container.topAnchor),
-            topBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            topBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            topBar.heightAnchor.constraint(equalToConstant: 58),
+            sidebar.topAnchor.constraint(equalTo: container.topAnchor),
+            sidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            sidebar.widthAnchor.constraint(equalToConstant: 188),
 
-            saveBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            sidebarLine.topAnchor.constraint(equalTo: container.topAnchor),
+            sidebarLine.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            sidebarLine.bottomAnchor.constraint(equalTo: saveBar.topAnchor),
+            sidebarLine.widthAnchor.constraint(equalToConstant: 0.5),
+
+            saveBar.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             saveBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             saveBar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            saveBar.heightAnchor.constraint(equalToConstant: 56),
+            saveBar.heightAnchor.constraint(equalToConstant: 52),
 
             saveBarLine.topAnchor.constraint(equalTo: saveBar.topAnchor),
             saveBarLine.leadingAnchor.constraint(equalTo: saveBar.leadingAnchor),
             saveBarLine.trailingAnchor.constraint(equalTo: saveBar.trailingAnchor),
             saveBarLine.heightAnchor.constraint(equalToConstant: 1),
 
-            scroll.topAnchor.constraint(equalTo: topBar.bottomAnchor),
-            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            scroll.topAnchor.constraint(equalTo: container.topAnchor, constant: 22),
+            scroll.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: saveBar.topAnchor),
         ])
@@ -397,9 +408,9 @@ final class SettingsWindowController: NSWindowController {
             document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             document.heightAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.heightAnchor),
 
-            contentStack.topAnchor.constraint(equalTo: document.topAnchor, constant: 24),
-            contentStack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 32),
-            contentStack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -32),
+            contentStack.topAnchor.constraint(equalTo: document.topAnchor, constant: 12),
+            contentStack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 28),
+            contentStack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -28),
         ])
 
         let fit = document.heightAnchor.constraint(greaterThanOrEqualTo: contentStack.heightAnchor, constant: 0)
@@ -564,7 +575,7 @@ final class SettingsWindowController: NSWindowController {
         openConfig.toolTip = "在默认编辑器中打开 config.json；会直接修改配置"
         openConfig.isBordered = false
         openConfig.font = .systemFont(ofSize: 11)
-        openConfig.contentTintColor = Theme.secondary
+        openConfig.contentTintColor = Theme.accent
 
         hintLabel.font = .systemFont(ofSize: 10.5)
         hintLabel.textColor = Theme.secondary
@@ -583,7 +594,7 @@ final class SettingsWindowController: NSWindowController {
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let row = NSStackView(views: [openConfig, hintLabel, spacer, save])
+        let row = NSStackView(views: [openConfig, spacer, hintLabel, save])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 12
@@ -937,11 +948,31 @@ final class SettingsWindowController: NSWindowController {
             if index > 0 { rows.append(separator()) }
             rows.append(providerRow(id))
         }
+        let privacy = groupCard([
+            controlRow(
+                "配置文件",
+                label(service.config.url.path, size: 10, color: Theme.secondary),
+                caption: "本机 0600；不会上传到网络。"
+            ),
+            separator(),
+            controlRow(
+                "浏览器 Cookie",
+                label("仅 OpenCode / WorkBuddy", size: 11, color: Theme.secondary),
+                caption: "自动 Cookie 只在本机 Chrome 登录态失效时回退；首次可能弹钥匙串授权。"
+            ),
+            separator(),
+            controlRow(
+                "凭据管理",
+                label("账户管理 → 新增 / 编辑 / 切换", size: 11, color: Theme.secondary),
+                caption: "切到哪个账号，collector 就查哪个账号。"
+            ),
+        ])
         return composePage([
             pageHeader("服务", ""),
             groupCard(rows),
-            label("自动 Cookie：登录态失效时读取本机 Chrome Cookie；仅 OpenCode / WorkBuddy 支持，首次开启可能弹钥匙串授权。", size: 10, color: Theme.tertiary),
             label("关闭的服务会同时从菜单栏和面板移除。", size: 11, color: Theme.tertiary),
+            groupLabel("凭证与隐私"),
+            privacy,
         ])
     }
 
@@ -1303,7 +1334,7 @@ final class SettingsWindowController: NSWindowController {
             return wrapper
         }
 
-        let captionLabel = wrappingLabel(caption, size: 10, color: Theme.tertiary, width: 500)
+        let captionLabel = wrappingLabel(caption, size: 11, color: Theme.tertiary, width: 500)
         let column = NSStackView(views: [top, captionLabel])
         column.orientation = .vertical
         column.alignment = .leading
@@ -1398,6 +1429,13 @@ final class SettingsWindowController: NSWindowController {
         manageAccounts.isBordered = false
         manageAccounts.font = .systemFont(ofSize: 11, weight: .medium)
         manageAccounts.contentTintColor = Theme.accent
+        manageAccounts.attributedTitle = NSAttributedString(
+            string: "账户管理",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: Theme.accent,
+            ]
+        )
         manageAccounts.identifier = NSUserInterfaceItemIdentifier(id)
         manageAccounts.setAccessibilityLabel("管理 \(style.shortName) 账户")
         manageAccounts.toolTip = "添加、编辑、删除或切换账户"

@@ -468,6 +468,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     severity: item.severity,
                     scale: scale,
                     ink: menuBarInk(),
+                    fixedInk: true,
                     appearance: button.effectiveAppearance
                 )
                 button.attributedTitle = NSAttributedString(string: "")

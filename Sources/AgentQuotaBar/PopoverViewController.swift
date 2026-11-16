@@ -143,7 +143,7 @@ final class QuotaPopoverViewController: NSViewController {
         headerActions.layer?.borderWidth = 1
         headerActions.layer?.borderColor = Theme.separator.resolvedCGColor()
         headerActions.translatesAutoresizingMaskIntoConstraints = false
-        for button in [checkinButton, refreshButton, gear] { headerActions.addArrangedSubview(button) }
+        for button in [checkinButton, themeButton, refreshButton, gear] { headerActions.addArrangedSubview(button) }
 
         let headerSpacer = NSView()
         headerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -714,7 +714,7 @@ final class ProviderRowView: NSView {
 
         let badge = LogoBadgeView(provider: provider.id, color: style.color, size: 24)
 
-        let name = label(style.shortName, size: 14, weight: .semibold)
+        let name = label(style.shortName, size: 15, weight: .semibold)
         let statusDot = NSView()
         statusDot.wantsLayer = true
         statusDot.translatesAutoresizingMaskIntoConstraints = false
@@ -786,7 +786,7 @@ final class ProviderRowView: NSView {
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let value = label(valueText(provider), size: 21, weight: .semibold, color: valueColor(provider), monospaced: true)
+        let value = label(valueText(provider), size: 22, weight: .semibold, color: valueColor(provider), monospaced: true)
         value.alignment = .right
 
         let valueRow = NSStackView()
@@ -795,7 +795,7 @@ final class ProviderRowView: NSView {
         valueRow.spacing = 4
         valueRow.addArrangedSubview(value)
         if provider.id == "trae" || provider.id == "workbuddy" {
-            valueRow.addArrangedSubview(label("积分", size: 10, color: Theme.tertiary))
+            valueRow.addArrangedSubview(label("积分", size: 11, color: Theme.tertiary))
         }
         let valueStack = NSStackView()
         valueStack.orientation = .vertical
@@ -820,7 +820,7 @@ final class ProviderRowView: NSView {
         }
 
         if showsCategory {
-            let categoryLabel = label(category, size: 10, weight: .medium, color: Theme.tertiary)
+            let categoryLabel = label(category, size: 11, weight: .semibold, color: Theme.secondary)
             categoryLabel.setAccessibilityLabel("分组：\(category)")
             stack.addArrangedSubview(categoryLabel)
             categoryLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -850,7 +850,7 @@ final class ProviderRowView: NSView {
             let used = metric.usedPercent ?? max(0, 100 - remaining)
             let severity = QuotaSeverity.from(remaining: remaining)
             let primary = index == 0
-            let titleSize: CGFloat = primary ? 12 : 11
+            let titleSize: CGFloat = primary ? 13 : 12
 
             // 维度名在左，剩余在右；重置时间放到进度条下方，避免左右来回找对应关系。
             let meta = NSStackView()
@@ -892,7 +892,7 @@ final class ProviderRowView: NSView {
             if primary {
                 let detailRow = label(
                     detailParts.joined(separator: " · "),
-                    size: 10,
+                    size: 10.5,
                     color: Theme.tertiary
                 )
                 stack.addArrangedSubview(detailRow)
