@@ -1008,8 +1008,10 @@ final class AvatarView: NSView {
     }
 
     func refreshInk() {
-        guard let provider = avatarProvider,
-              let logo = ProviderLogo.image(for: provider, size: avatarSize * 0.92, color: Theme.text) else { return }
+        guard let provider = avatarProvider else { return }
+        let appearance = window?.effectiveAppearance ?? effectiveAppearance
+        let ink = Theme.text.resolvedForAppearance(appearance)
+        guard let logo = ProviderLogo.image(for: provider, size: avatarSize * 0.92, color: ink) else { return }
         logoView?.image = logo
         logoView?.needsDisplay = true
     }

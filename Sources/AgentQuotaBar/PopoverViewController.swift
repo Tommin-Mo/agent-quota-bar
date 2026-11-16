@@ -746,7 +746,7 @@ final class ProviderRowView: NSView {
         }
         statusDot.color = statusColor
         statusDot.toolTip = provider.status == "ok" ? "已连接" : (provider.error ?? provider.detail ?? provider.status)
-        let nameRow = NSStackView(views: [name])
+        let nameRow = NSStackView(views: [name, statusDot])
         nameRow.orientation = .horizontal
         nameRow.spacing = 5
         nameRow.alignment = .centerY
@@ -842,7 +842,7 @@ final class ProviderRowView: NSView {
             categoryLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
-        let header = NSStackView(views: [statusDot, badge, info, spacer, valueStack])
+        let header = NSStackView(views: [badge, info, spacer, valueStack])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 9
@@ -890,8 +890,9 @@ final class ProviderRowView: NSView {
                     color: remaining <= QuotaStyle.warningPercent ? severity.color : Theme.secondary
                 ))
             }
-            if !primary, let detail = metric.detail, !detail.isEmpty {
-                meta.addArrangedSubview(label("· \(detail)", size: 9, color: Theme.tertiary))
+            if let detail = metric.detail, !detail.isEmpty {
+                let detailText = primary ? "已用 \(Int(used.rounded()))% · \(detail)" : "· \(detail)"
+                meta.addArrangedSubview(label(detailText, size: 9, color: Theme.tertiary))
             }
             stack.addArrangedSubview(meta)
             meta.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -905,17 +906,6 @@ final class ProviderRowView: NSView {
             bar.heightAnchor.constraint(equalToConstant: primary ? 4 : 3).isActive = true
             bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
-            var detailParts = ["已用 \(Int(used.rounded()))%"]
-            if let detail = metric.detail, !detail.isEmpty { detailParts.append(detail) }
-            if primary {
-                let detailRow = label(
-                    detailParts.joined(separator: " · "),
-                    size: 10.5,
-                    color: Theme.tertiary
-                )
-                stack.addArrangedSubview(detailRow)
-                detailRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-            }
         }
 
         if !["deepseek", "trae", "workbuddy"].contains(provider.id),
@@ -954,7 +944,7 @@ final class ProviderRowView: NSView {
             messageLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -54).isActive = true
         }
 
-        stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8).isActive = true
+        stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10).isActive = true
 
         separator.wantsLayer = true
         separator.layer?.backgroundColor = Theme.separator.resolvedCGColor()

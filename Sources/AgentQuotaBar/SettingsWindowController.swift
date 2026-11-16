@@ -202,56 +202,6 @@ final class SidebarButton: NSButton {
     }
 }
 
-/// 设置页滑块：统一轨道、填充和圆形把手，避免默认 NSSlider 在浅色下出现
-/// 一条突兀的白轨；拖动逻辑仍由 NSSliderCell 处理。
-final class QuotaSliderCell: NSSliderCell {
-    override func drawBar(inside rect: NSRect, flipped: Bool) {
-        let height: CGFloat = 4
-        let trackRect = NSRect(
-            x: rect.minX,
-            y: rect.midY - height / 2,
-            width: rect.width,
-            height: height
-        )
-        let radius = height / 2
-        Theme.surfaceAlt.setFill()
-        NSBezierPath(roundedRect: trackRect, xRadius: radius, yRadius: radius).fill()
-
-        let range = maxValue - minValue
-        let fraction = range > 0 ? min(1, max(0, (doubleValue - minValue) / range)) : 0
-        guard fraction > 0 else { return }
-        let filled = NSRect(
-            x: trackRect.minX,
-            y: trackRect.minY,
-            width: trackRect.width * CGFloat(fraction),
-            height: trackRect.height
-        )
-        Theme.accent.setFill()
-        NSBezierPath(roundedRect: filled, xRadius: radius, yRadius: radius).fill()
-    }
-
-    override func drawKnob(_ knobRect: NSRect) {
-        let diameter = min(15, max(12, knobRect.width))
-        let rect = NSRect(
-            x: knobRect.midX - diameter / 2,
-            y: knobRect.midY - diameter / 2,
-            width: diameter,
-            height: diameter
-        )
-        let shadow = NSShadow()
-        shadow.shadowBlurRadius = 2
-        shadow.shadowOffset = NSSize(width: 0, height: -0.5)
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
-        shadow.set()
-        Theme.surface.setFill()
-        NSBezierPath(ovalIn: rect).fill()
-        Theme.accent.withAlphaComponent(0.9).setStroke()
-        let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5))
-        ring.lineWidth = 1
-        ring.stroke()
-    }
-}
-
 final class SettingsWindowController: NSWindowController {
     private let service: QuotaService
     private let checkin: CheckinService
@@ -687,7 +637,7 @@ final class SettingsWindowController: NSWindowController {
         refreshPopup.target = self
         refreshPopup.action = #selector(refreshOptionChanged)
         refreshPopup.translatesAutoresizingMaskIntoConstraints = false
-        refreshPopup.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        refreshPopup.widthAnchor.constraint(equalToConstant: 140).isActive = true
 
         proxyField.font = .systemFont(ofSize: 12)
         proxyField.bezelStyle = .roundedBezel
@@ -696,7 +646,7 @@ final class SettingsWindowController: NSWindowController {
         proxyField.setAccessibilityLabel("系统代理")
         proxyField.delegate = self
         proxyField.translatesAutoresizingMaskIntoConstraints = false
-        proxyField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        proxyField.widthAnchor.constraint(equalToConstant: 190).isActive = true
 
         loginSwitch.target = self
         loginSwitch.action = #selector(loginSwitchChanged)
@@ -726,7 +676,7 @@ final class SettingsWindowController: NSWindowController {
         appearanceControl.action = #selector(appearanceChanged)
         appearanceControl.setAccessibilityLabel("外观")
         appearanceControl.translatesAutoresizingMaskIntoConstraints = false
-        appearanceControl.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        appearanceControl.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
         checkinSwitch.isOn = checkin.isAutoEnabled
         checkinSwitch.target = self
@@ -926,7 +876,7 @@ final class SettingsWindowController: NSWindowController {
         menuBarModePopup.action = #selector(menuBarModeChanged)
         menuBarModePopup.setAccessibilityLabel("菜单栏显示方式")
         menuBarModePopup.translatesAutoresizingMaskIntoConstraints = false
-        menuBarModePopup.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        menuBarModePopup.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
         fixedProviderPopup.removeAllItems()
         for id in providerOrder {
@@ -940,7 +890,7 @@ final class SettingsWindowController: NSWindowController {
         fixedProviderPopup.action = #selector(fixedProviderSelected)
         fixedProviderPopup.setAccessibilityLabel("固定显示的服务")
         fixedProviderPopup.translatesAutoresizingMaskIntoConstraints = false
-        fixedProviderPopup.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        fixedProviderPopup.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
         scaleSlider.minValue = 0.8
         scaleSlider.maxValue = 1.6
@@ -1059,7 +1009,6 @@ final class SettingsWindowController: NSWindowController {
         }
 
         for (label, slider) in [("警戒阈值", warningSlider), ("危险阈值", dangerSlider)] {
-            slider.cell = QuotaSliderCell()
             slider.minValue = 1
             slider.maxValue = 99
             slider.isContinuous = true
