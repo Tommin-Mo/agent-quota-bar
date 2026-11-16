@@ -245,6 +245,17 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
 - 每个 provider 一个 `collectXxx()`，单家失败只影响自己那一行；
 - 只写本机状态：`config.json`（含凭证）、`usage.json` / `history.json` / `last-snapshot.json`、两个 LaunchAgent plist；不会改第三方登录态。
 
+## SwiftBar / xbar 小组件
+
+可选：用 `scripts/agent-quota.swiftbar.js` 把同一份数据放到 SwiftBar/xbar：
+
+```bash
+ln -s "$PWD/scripts/agent-quota.swiftbar.js" \
+  "$HOME/Library/Application Support/SwiftBar/Plugins/agent-quota.1m.js"
+```
+
+显示最紧张的一家，展开可看全部 Provider。
+
 ## 命令行 / JSON 集成
 
 `scripts/quota` 是零依赖 Node 小工具，直接复用仓库或已安装 App 里的 collector，不需要 App 在运行。完整字段、schema 和集成示例见 [docs/CLI.md](docs/CLI.md)：
