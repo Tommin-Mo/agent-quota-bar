@@ -25,6 +25,7 @@ swift build -c release --package-path "$ROOT"
 
 BIN="$ROOT/.build/release/AgentQuotaBar"
 HELPER="$ROOT/.build/release/ChromeSafeStorage"
+WIDGET_BIN="$DIST/.widget/AgentQuotaWidget"
 [ -x "$BIN" ] || fail "release binary not found: $BIN"
 [ -x "$HELPER" ] || fail "keychain helper not found: $HELPER"
 
@@ -34,6 +35,13 @@ STAGE="$STAGE_ROOT/AgentQuotaBar.app"
 cleanup() { rm -rf "$STAGE_ROOT"; }
 trap cleanup EXIT
 
+echo "==> build WidgetKit extension"
+SDK="$(xcrun --show-sdk-path)"
+mkdir -p "$(dirname "$WIDGET_BIN")"
+swiftc -parse-as-library "$ROOT/Sources/AgentQuotaWidget/AgentQuotaWidget.swift" \
+  -o "$WIDGET_BIN" -target arm64-apple-macos14.0 -sdk "$SDK" \
+  -framework WidgetKit -framework SwiftUI -framework Foundation
+
 echo "==> assemble ${APP#"$ROOT"/} (version $VERSION, build $BUILD)"
 rm -rf "$STAGE_ROOT"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
@@ -42,6 +50,46 @@ cp "$BIN" "$STAGE/Contents/MacOS/AgentQuotaBar"
 chmod +x "$STAGE/Contents/MacOS/AgentQuotaBar"
 cp "$HELPER" "$STAGE/Contents/Resources/ChromeSafeStorage"
 chmod +x "$STAGE/Contents/Resources/ChromeSafeStorage"
+
+# WidgetKit extension：手写 .appex，和主 App 同版本/同签名。
+WIDGET="$STAGE/Contents/PlugIns/AgentQuotaWidget.appex"
+mkdir -p "$WIDGET/Contents/MacOS"
+cp "$WIDGET_BIN" "$WIDGET/Contents/MacOS/AgentQuotaWidget"
+chmod +x "$WIDGET/Contents/MacOS/AgentQuotaWidget"
+cat > "$WIDGET/Contents/Info.plist" <<WPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>AgentQuotaWidget</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.tommin.agentquotabar.widget</string>
+    <key>CFBundleName</key>
+    <string>AgentQuotaWidget</string>
+    <key>CFBundleDisplayName</key>
+    <string>Agent 额度</string>
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$VERSION</string>
+    <key>CFBundleVersion</key>
+    <string>$BUILD</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.widgetkit-extension</string>
+        <key>NSExtensionAttributes</key>
+        <dict>
+            <key>NSExtensionPointVersion</key>
+            <string>3.0</string>
+        </dict>
+    </dict>
+</dict>
+</plist>
+WPLIST
 
 # collector 运行时用 __dirname 找 workbuddy-key，必须整个目录进 Resources
 cp "$ROOT/collector/collector.js" "$ROOT/collector/trae-crypto.js" "$STAGE/Contents/Resources/"
@@ -102,6 +150,7 @@ plutil -lint "$STAGE/Contents/Info.plist" >/dev/null \
 # 签名失败必须让构建失败，不能 `|| true` 吞掉。
 echo "==> codesign (ad-hoc)"
 codesign --force --sign - "$STAGE/Contents/Resources/ChromeSafeStorage"
+codesign --force --sign - --entitlements "$RES_SRC/AgentQuotaWidget.entitlements" "$STAGE/Contents/PlugIns/AgentQuotaWidget.appex"
 codesign --force --sign - "$STAGE"
 codesign --verify --strict --verbose=2 "$STAGE" \
   || fail "codesign verification failed after signing"

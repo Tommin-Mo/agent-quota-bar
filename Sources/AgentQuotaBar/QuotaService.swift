@@ -34,6 +34,7 @@ final class QuotaService {
            let cached = try? JSONDecoder().decode(QuotaSnapshot.self, from: data),
            !cached.providers.isEmpty {
             snapshot = cached
+            publishWidgetSnapshot(data)
         }
     }
 
@@ -146,6 +147,17 @@ final class QuotaService {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         try? data.write(to: cacheURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
+        publishWidgetSnapshot(data)
+    }
+
+    /// WidgetKit extension 是 sandboxed 的，只共享 App Group 容器里的快照。
+    private func publishWidgetSnapshot(_ data: Data) {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let directory = home.appendingPathComponent("Library/Application Support/AgentQuotaBar", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("last-snapshot.json")
+        try? data.write(to: destination, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
     }
 
     private static func providerIDs(from only: String?) -> [String]? {

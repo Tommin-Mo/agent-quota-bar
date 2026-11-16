@@ -255,6 +255,22 @@ node scripts/quota-server.js
 
 然后在 Chrome 加载已解压扩展。详见 `browser-extension/README.md`。
 
+## 原生 WidgetKit 小组件
+
+`swift build` / `scripts/build_app.sh` 会同时编译并嵌入：
+
+```text
+Contents/PlugIns/AgentQuotaWidget.appex
+```
+
+首次启动后到系统小组件库添加「Agent 额度」。Widget 读取：
+
+```text
+~/Library/Application Support/AgentQuotaBar/last-snapshot.json
+```
+
+只显示 Provider 名称和剩余百分比，不显示账号/邮箱。
+
 ## SwiftBar / xbar 小组件
 
 可选：用 `scripts/agent-quota.swiftbar.js` 把同一份数据放到 SwiftBar/xbar：
