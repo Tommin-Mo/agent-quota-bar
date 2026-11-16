@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var lastSwitchAt = Date.distantPast
     private var lastMenuBarMode: String?
     private var pendingUsage: (id: String, at: Date, magnitude: Double)?
+    private var frontmostMonitor: FrontmostProviderMonitor!
+    private var lastOpenCodeSession: Date?
     private let switchCooldown: TimeInterval = 10
     private var didPopoverSnapshot = false
     private var didStatusSnapshot = false
@@ -110,6 +112,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let checkinTimer { RunLoop.main.add(checkinTimer, forMode: .common) }
 
         scheduler = RefreshScheduler(service: service)
+        lastOpenCodeSession = OpenCodeActivity.latestSessionDate()
+        frontmostMonitor = FrontmostProviderMonitor()
+        frontmostMonitor.onChange = { [weak self] provider in
+            self?.frontmostProviderChanged(provider)
+        }
+        frontmostMonitor.start()
         render()
         refreshCheckinUI()
         scheduler.start()
@@ -592,6 +600,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return used
     }
 
+    private func frontmostProviderChanged(_ providerID: String?) {
+        guard service.config.string("menuBarMode", default: "auto") == "auto",
+              let providerID,
+              let snapshot = service.snapshot,
+              snapshot.provider(withID: providerID) != nil else { return }
+        activeProviderID = providerID
+        pendingUsage = nil
+        lastSwitchAt = Date()
+        render()
+    }
+
     private func updateActiveProvider(snapshot: QuotaSnapshot, mode: String) {
         let candidates = snapshot.providers.filter { $0.status != "disabled" }
 
@@ -628,7 +647,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
 
-        if mode == "auto", let pendingUsage,
+        // 前台 App 是最强的“最近使用”信号；有它时不要让额度差值把图标抢走。
+        let frontmostProvider = mode == "auto" ? frontmostMonitor?.currentProvider : nil
+
+        // OpenCode 本地真正创建/更新会话时，即使窗口不在前台也能补一次。
+        if let sessionDate = OpenCodeActivity.latestSessionDate() {
+            if lastOpenCodeSession == nil {
+                lastOpenCodeSession = sessionDate
+            } else if sessionDate > lastOpenCodeSession! {
+                lastOpenCodeSession = sessionDate
+                if var current = lastUsage["opencode"] {
+                    current.lastUsedAt = now
+                    current.magnitude = max(current.magnitude, 1)
+                    lastUsage["opencode"] = current
+                }
+                if pendingUsage == nil || now > pendingUsage!.at {
+                    pendingUsage = ("opencode", now, 1)
+                }
+            }
+        }
+
+        if let frontmostProvider,
+           snapshot.provider(withID: frontmostProvider) != nil {
+            activeProviderID = frontmostProvider
+            pendingUsage = nil
+        } else if mode == "auto", let pendingUsage,
            now.timeIntervalSince(lastSwitchAt) >= switchCooldown {
             // 冷却期间只暂存，不丢；到点再切，切完清空，避免旧事件反复触发。
             activeProviderID = pendingUsage.id
