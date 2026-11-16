@@ -96,12 +96,11 @@ final class UsageTracker {
             let keyPath = id == "trae" ? \State.trae : \State.workbuddy
             if var current = state[keyPath: keyPath] {
                 guard Self.isNewer(stamp, than: current.updatedAt) else { continue }
-                if consumed < current.baseline {
-                    // 套餐周期重置/过期套餐被移除：只重建基线，保留今天已经记录的消耗。
-                    current.baseline = consumed
-                } else {
-                    current.spent = max(0, consumed - current.baseline)
+                if consumed >= current.baseline {
+                    // 套餐周期重置/过期套餐被移除时不能重算，否则今日消耗会从 200 掉到 5。
+                    current.spent += max(0, consumed - current.baseline)
                 }
+                current.baseline = consumed
                 current.updatedAt = stamp
                 state[keyPath: keyPath] = current
             } else {

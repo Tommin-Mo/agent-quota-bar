@@ -623,14 +623,31 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func saveAndVerify() {
         let config = service.config
+        let prefix = "providers.\(providerID)."
+        var changed: [String: String] = [:]
         for (key, field) in fields {
-            config.set(key, field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+            // 空白表示“保留原值”，避免打开配置页点保存就把已有密钥清空。
+            let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            config.set(key, value)
+            if key.hasPrefix(prefix) { changed[String(key.dropFirst(prefix.count))] = value }
         }
         if providerID == "opencode" {
             config.set("providers.opencode.mode", (segmented?.selectedSegment ?? 0) == 0 ? "go" : "zen")
         }
         if providerID == "trae", let popup = traePopup {
-            config.set("providers.trae.edition", popup.selectedItem?.representedObject as? String ?? "cn")
+            let edition = popup.selectedItem?.representedObject as? String ?? "cn"
+            config.set("providers.trae.edition", edition)
+            changed["edition"] = edition
+        }
+        // 有持久账号时同时写回账号记录，避免下次“设为当前”把新凭据覆盖回旧值。
+        let accountStore = AccountStore(config: config)
+        if !changed.isEmpty,
+           let active = accountStore.activeAccount(for: providerID),
+           !active.isLegacy {
+            var updated = active
+            updated.credentials.merge(changed) { _, new in new }
+            try? accountStore.updateAccount(updated, for: providerID)
         }
         do {
             try config.save()

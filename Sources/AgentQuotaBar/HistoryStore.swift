@@ -32,6 +32,7 @@ final class HistoryStore {
     func record(
         snapshot: QuotaSnapshot,
         costs: [String: CostSummary] = [:],
+        only: Set<String>? = nil,
         now: Date = Date()
     ) -> Bool {
         guard acquireLock() else { return false }
@@ -42,7 +43,7 @@ final class HistoryStore {
         let keep = Set(Self.dateKeys(days: Self.retentionDays, now: now, calendar: calendar))
         var entries = load().filter { keep.contains($0.date) }
 
-        for provider in snapshot.providers where provider.status != "disabled" {
+        for provider in snapshot.providers where provider.status != "disabled" && (only == nil || only!.contains(provider.id)) {
             var entry = entries.first { $0.date == today && $0.provider == provider.id }
                 ?? UsageHistoryEntry(date: today, provider: provider.id)
 

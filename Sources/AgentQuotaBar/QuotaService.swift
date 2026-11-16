@@ -80,14 +80,9 @@ final class QuotaService {
             && incomingRelevant.allSatisfy { $0.status == "error" && Self.isNetworkProvider($0) }
 
         if only != nil {
-            // 定向刷新：网络掉线不能凭单个 provider 判定全局离线，
-            // 也不要用错误行盖掉缓存里的可用数据。
-            if allIncomingNetworkFailed {
-                isOffline = true
-                errorMessage = nil
-                return
-            }
-
+            // 定向刷新只影响目标行；单个 provider 断网不能把整个面板判成离线。
+            isOffline = false
+            errorMessage = nil
             var providers = incoming.providers
             if let old = snapshot {
                 // 定向刷新：替换目标 provider，其余保持原样（不会因子集响应丢掉其他家数据）。
@@ -113,7 +108,7 @@ final class QuotaService {
             isOffline = false
             errorMessage = nil
             UsageTracker.shared.record(snapshot: merged, only: Set(only ?? []))
-            HistoryStore.shared.record(snapshot: merged)
+            HistoryStore.shared.record(snapshot: merged, only: only.map(Set.init))
             saveCache(merged)
             return
         }

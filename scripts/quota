@@ -159,9 +159,9 @@ function locateCollector() {
   }
   const candidates = [
     path.join(__dirname, '..', 'collector', 'collector.js'),
-    path.join(HOME, 'Applications', 'AgentQuotaBar.app', 'Contents', 'Resources', 'collector.js'),
     '/Applications/AgentQuotaBar.app/Contents/Resources/collector.js',
     path.join(__dirname, '..', 'dist', 'AgentQuotaBar.app', 'Contents', 'Resources', 'collector.js'),
+    path.join(HOME, 'Applications', 'AgentQuotaBar.app', 'Contents', 'Resources', 'collector.js'),
   ];
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) return candidate;

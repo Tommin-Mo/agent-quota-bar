@@ -22,8 +22,5 @@ async function load() {
     list.innerHTML = '<p class="muted">本地服务未启动。先运行：node scripts/quota-server.js</p>';
   }
 }
-document.getElementById('open').addEventListener('click', () => {
-  window.open('agentquotabar://open', '_blank');
-});
 load();
 setInterval(load, 30000);

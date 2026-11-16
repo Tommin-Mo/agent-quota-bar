@@ -80,6 +80,10 @@ final class CostStore {
             return "今日 \(today) · 近 7 天 \(week)"
         }
 
+        if let config,
+           !config.bool("providers.opencode.costEnabled", default: true) {
+            return nil
+        }
         let series = fetch(days: Self.defaultDays, now: now)
         guard series.readable, provider == nil || provider?.id == Self.openCodeProviderID else {
             return nil

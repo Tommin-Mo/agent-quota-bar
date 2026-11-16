@@ -87,7 +87,7 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
 - **OpenCode Zen**：内置浏览器登录 `opencode.ai` 成功后，自动从 WebKit cookie store 读取 `__Host-console_session`（兼容旧版 `auth`），再调 `/console/api/orgs` 取 workspaceId，写入 `providers.opencode.cookie / workspaceId / mode=zen` 并立即发一次请求验证。Cookie 会随会话过期，重新登录即可。
 - **WorkBuddy**：登录页会从 localStorage/sessionStorage 抓 token/uid 写入配置；桌面端更常用的是 collector 通过 WorkBuddy 自带 Electron 安全存储解封 at-rest token（见上一节），不需要网页登录。
 - **Trae / Codex**：没有网页登录可抓，直接复用本机 `storage.json` / `auth.json`。
-- **Chrome Cookie 导入（显式 opt-in，默认关闭）**：需要手动改 `config.json` 开启，App 目前没有对应开关：
+- **Chrome Cookie 导入（显式 opt-in，默认关闭）**：设置 → 服务 → OpenCode / WorkBuddy 的「自动 Cookie」开关；`chromeCookies.profile/dataDir/...` 仍需改 `config.json`：
 
   ```json
   {
@@ -144,7 +144,7 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
 ```
 
 - 设置 → 服务：某家配置了多于一个账号时才显示账户下拉；切换会调用 `AccountStore.activate`，把选中账号的凭据镜像回扁平字段，兼容只读扁平配置的 collector，然后立即刷新。
-- 当前 UI 只支持**切换**；新增/编辑/删除账号仍要改 `config.json`（或后续版本 UI），CLI 的 `accounts` 只读展示、不写入。手工编辑 `accounts[]` 后，建议在设置 → 服务里切换一次该账号，让凭据镜像到扁平字段，collector 才能读到。
+- 当前 UI 支持**新增/编辑/删除/切换**；CLI 的 `accounts` 只读展示、不写入。设置页切换账号时会把凭据镜像到扁平字段，collector 直接生效。
 - 凭据字段按 provider：Codex `authPath/codexHome`、DeepSeek `apiKey`、OpenCode `apiKey/cookie/workspaceId`、Trae `edition`、WorkBuddy `token/uid`。
 - 同一时间只有一个活动账号，不能同时查询多个账号额度；`scripts/quota accounts` 只输出标签、账号标识和已填字段名，不会输出凭据值。
 

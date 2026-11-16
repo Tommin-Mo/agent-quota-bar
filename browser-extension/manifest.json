@@ -5,5 +5,5 @@
   "description": "查看本机 AgentQuotaBar 的额度快照。",
   "action": { "default_popup": "popup.html", "default_title": "AgentQuotaBar" },
   "host_permissions": ["http://127.0.0.1:17890/*"],
-  "permissions": ["storage"]
+  "permissions": []
 }

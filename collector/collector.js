@@ -579,9 +579,18 @@ function failed(id, name, message) {
 
 // ---------------------------------------------------------------- Codex / ChatGPT
 
-function collectCodex() {
-  const dir = process.env.CODEX_HOME || path.join(HOME, '.codex');
-  const authPath = path.join(dir, 'auth.json');
+function collectCodex(cfg = {}) {
+  const expandPath = (value) => {
+    if (value === '~') return HOME;
+    if (value.startsWith('~/')) return path.join(HOME, value.slice(2));
+    return value;
+  };
+  const dir = cfg.codexHome
+    ? expandPath(String(cfg.codexHome))
+    : process.env.CODEX_HOME || path.join(HOME, '.codex');
+  const authPath = cfg.authPath
+    ? expandPath(String(cfg.authPath))
+    : path.join(dir, 'auth.json');
   if (!fs.existsSync(authPath)) {
     return unconfigured('codex', 'Codex', '未找到 ~/.codex/auth.json，请先登录 Codex / ChatGPT');
   }
@@ -1068,12 +1077,16 @@ function collectWorkBuddy(cfg) {
   let token = String(cfg.token || process.env.WORKBUDDY_TOKEN || '').trim().replace(/^Bearer\s+/i, '');
   let uid = String(cfg.uid || '').trim();
   let source = 'config';
-  const auto = workBuddyAutoCredential();
-  if (auto) {
-    token = auto.token;
-    uid = auto.uid;
-    source = 'auto';
-  } else if (!token) {
+  // 设置里显式配置的账号优先；只有没有 token 时才用本机 WorkBuddy 自动解密。
+  if (!token) {
+    const auto = workBuddyAutoCredential();
+    if (auto) {
+      token = auto.token;
+      uid = auto.uid;
+      source = 'auto';
+    }
+  }
+  if (!token) {
     const found = discoverWorkBuddyToken();
     if (found) {
       token = found.token;
@@ -1592,7 +1605,8 @@ function collectOpenCode(cfg) {
   const mode = String(cfg.mode || '').toLowerCase();
   const apiKey = String(cfg.apiKey || process.env.OPENCODE_GO_API_KEY || '').trim();
 
-  if (apiKey && mode !== 'zen') {
+  // 账号切换可能留下上一账号的 mode；凭据形态优先，避免切到 Go 后仍走 Zen。
+  if (apiKey && (mode !== 'zen' || !cfg.cookie)) {
     const res = http('https://opencode.ai/zen/go/v1/usage', {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
     });
@@ -1619,7 +1633,7 @@ function collectOpenCode(cfg) {
   }
 
   // mode=go 只走 API Key，不读 Chrome，避免无意义地弹钥匙串授权。
-  const cookieInfo = mode === 'go' ? { header: '', source: 'none' } : resolveOpenCodeCookie(cfg);
+  const cookieInfo = mode === 'go' && apiKey ? { header: '', source: 'none' } : resolveOpenCodeCookie(cfg);
   if (cookieInfo.header && mode !== 'go') {
     const headers = { Cookie: cookieInfo.header, Accept: 'application/json' };
     const orgIdCfg = String(cfg.workspaceId || '').trim();

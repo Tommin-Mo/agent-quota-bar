@@ -25,8 +25,17 @@ const percent = providers
   })
   .filter(Boolean)
   .sort((a, b) => a.remaining - b.remaining);
+const credit = providers
+  .map((p) => {
+    const m = (p.metrics || []).find((x) => x.kind === 'credit');
+    if (!m || !m.headlineValue) return null;
+    return { id: p.id, name: p.name, value: m.headlineValue };
+  })
+  .filter(Boolean)[0];
 const worst = percent[0];
-const label = worst ? `${worst.name} ${Math.round(worst.remaining)}%` : (data?.ok === false ? '额度读取失败' : '暂无额度');
+const label = worst
+  ? `${worst.name} ${Math.round(worst.remaining)}%`
+  : (credit ? `${credit.name} ${credit.value}` : (data?.ok === false ? '额度读取失败' : '暂无额度'));
 console.log(label);
 console.log('---');
 for (const p of providers) {
