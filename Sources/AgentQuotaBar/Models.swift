@@ -41,6 +41,8 @@ struct ProviderStatus: Codable, Identifiable {
     let subscriptionUntil: String?
     let subscriptionRenewsAt: String?
     let subscriptionWillRenew: Bool?
+    /// OpenCode 等本地可算成本的 provider 附加的成本汇总（可选，旧 collector 不返回）。
+    let cost: ProviderCost?
 
     var isUsable: Bool { status == "ok" || status == "warn" }
 }
@@ -64,6 +66,243 @@ extension ISO8601DateFormatter {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+
+    static let internet: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+}
+
+/// 宽松解析：带/不带毫秒的 ISO8601、只有日期的 `yyyy-MM-dd`、以及秒/毫秒时间戳字符串。
+enum FlexibleDateParser {
+    static func date(from raw: String?) -> Date? {
+        guard let raw else { return nil }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+
+        if let date = ISO8601DateFormatter.flexible.date(from: text) { return date }
+        if let date = ISO8601DateFormatter.internet.date(from: text) { return date }
+
+        let dayFormatter = DateFormatter()
+        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dayFormatter.timeZone = TimeZone.current
+        dayFormatter.dateFormat = "yyyy-MM-dd"
+        if let date = dayFormatter.date(from: text) { return date }
+
+        // 纯数字：秒级或毫秒级时间戳（OpenCode 使用毫秒）。
+        if text.allSatisfy({ $0.isNumber }), let value = Double(text), value > 0 {
+            return Date(timeIntervalSince1970: value > 1_000_000_000_000 ? value / 1000 : value)
+        }
+        return nil
+    }
+}
+
+// MARK: - 成本 / token
+
+/// 一次或一段时间内的 token 用量。缓存读/写单独计数，`total` 包含它们。
+///
+/// 自定义 `init(from:)`：collector 未来可能省略某些字段，缺字段按 0 处理，
+/// 不能让整个快照因为多/少一个 token 键就解析失败。
+struct TokenUsage: Codable, Equatable {
+    var input: Int = 0
+    var output: Int = 0
+    var reasoning: Int = 0
+    var cacheRead: Int = 0
+    var cacheWrite: Int = 0
+
+    static let zero = TokenUsage()
+
+    var total: Int { input + output + reasoning + cacheRead + cacheWrite }
+
+    func adding(_ other: TokenUsage) -> TokenUsage {
+        TokenUsage(
+            input: input + other.input,
+            output: output + other.output,
+            reasoning: reasoning + other.reasoning,
+            cacheRead: cacheRead + other.cacheRead,
+            cacheWrite: cacheWrite + other.cacheWrite
+        )
+    }
+
+    static func + (lhs: TokenUsage, rhs: TokenUsage) -> TokenUsage { lhs.adding(rhs) }
+
+    private enum CodingKeys: String, CodingKey {
+        case input, output, reasoning, cacheRead, cacheWrite
+    }
+
+    init(input: Int = 0, output: Int = 0, reasoning: Int = 0, cacheRead: Int = 0, cacheWrite: Int = 0) {
+        self.input = input
+        self.output = output
+        self.reasoning = reasoning
+        self.cacheRead = cacheRead
+        self.cacheWrite = cacheWrite
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        input = Self.decodeCount(container, .input)
+        output = Self.decodeCount(container, .output)
+        reasoning = Self.decodeCount(container, .reasoning)
+        cacheRead = Self.decodeCount(container, .cacheRead)
+        cacheWrite = Self.decodeCount(container, .cacheWrite)
+    }
+
+    /// 容忍 Int / Double / 字符串数字，负数按 0 处理。
+    private static func decodeCount(
+        _ container: KeyedDecodingContainer<CodingKeys>,
+        _ key: CodingKeys
+    ) -> Int {
+        if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+            return max(0, value)
+        }
+        if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+            return max(0, Int(value))
+        }
+        if let text = try? container.decodeIfPresent(String.self, forKey: key),
+           let value = Double(text) {
+            return max(0, Int(value))
+        }
+        return 0
+    }
+}
+
+/// collector 在 provider 上附加的可选成本字段：
+/// `cost: { currency, today, last7Days, tokens: { today, last7Days } }`。
+/// 旧 collector 不返回该字段；解析为 nil，不能用扁平的 costToday。
+struct ProviderCost: Codable, Equatable {
+    let currency: String?
+    let today: Double?
+    let last7Days: Double?
+    let tokens: ProviderCostTokens?
+}
+
+struct ProviderCostTokens: Codable, Equatable {
+    let today: TokenUsage?
+    let last7Days: TokenUsage?
+}
+
+/// 某个 provider 在 N 天窗口内的成本汇总。
+struct CostSummary: Codable, Equatable {
+    var cost: Double = 0
+    var tokens: TokenUsage = .zero
+    var sessions: Int = 0
+    var days: Int = 1
+    /// 数据源是否可读（例如 OpenCode 本地数据库存在且能查询）。
+    var readable: Bool = false
+    var databasePath: String?
+    var updatedAt: String?
+    var error: String?
+
+    var hasData: Bool {
+        readable && (cost > 0 || tokens.total > 0 || sessions > 0)
+    }
+}
+
+/// 单日成本，用于历史/趋势展示。
+struct DailyCost: Codable, Equatable, Identifiable {
+    let date: String
+    var cost: Double
+    var tokens: TokenUsage
+    var sessions: Int
+
+    var id: String { date }
+
+    init(date: String, cost: Double = 0, tokens: TokenUsage = .zero, sessions: Int = 0) {
+        self.date = date
+        self.cost = cost
+        self.tokens = tokens
+        self.sessions = sessions
+    }
+}
+
+// MARK: - 本地历史
+
+/// 每个 provider 每天的额度/余额快照。HistoryStore 持久化到 `history.json`。
+struct UsageHistoryEntry: Codable, Equatable, Identifiable {
+    let date: String
+    let provider: String
+    var usedPercent: Double?
+    var remainingPercent: Double?
+    var balance: Double?
+    var consumed: Double?
+    var cost: Double?
+    var tokens: TokenUsage?
+    var status: String?
+    var account: String?
+    var plan: String?
+    var updatedAt: String?
+
+    var id: String { "\(date)::\(provider)" }
+
+    init(
+        date: String,
+        provider: String,
+        usedPercent: Double? = nil,
+        remainingPercent: Double? = nil,
+        balance: Double? = nil,
+        consumed: Double? = nil,
+        cost: Double? = nil,
+        tokens: TokenUsage? = nil,
+        status: String? = nil,
+        account: String? = nil,
+        plan: String? = nil,
+        updatedAt: String? = nil
+    ) {
+        self.date = date
+        self.provider = provider
+        self.usedPercent = usedPercent
+        self.remainingPercent = remainingPercent
+        self.balance = balance
+        self.consumed = consumed
+        self.cost = cost
+        self.tokens = tokens
+        self.status = status
+        self.account = account
+        self.plan = plan
+        self.updatedAt = updatedAt
+    }
+}
+
+// MARK: - 多账号
+
+/// 一个 provider 下的单个账号。`credentials` 里是 provider 相关的密钥/字段，
+/// 例如 opencode 的 `apiKey / cookie / workspaceId`、workbuddy 的 `token / uid`。
+///
+/// `isLegacy` 表示这是从旧的单账号扁平字段（`providers.<id>.apiKey` 等）临时合成的，
+/// 不会写回配置；只有真正写入 `accounts` 数组的账号才是持久账号。
+struct ProviderAccount: Codable, Equatable, Identifiable {
+    let id: String
+    var label: String
+    var account: String?
+    var credentials: [String: String]
+    var createdAt: String?
+    var updatedAt: String?
+    var lastUsedAt: String?
+    var isLegacy: Bool
+
+    init(
+        id: String,
+        label: String,
+        account: String? = nil,
+        credentials: [String: String] = [:],
+        createdAt: String? = nil,
+        updatedAt: String? = nil,
+        lastUsedAt: String? = nil,
+        isLegacy: Bool = false
+    ) {
+        self.id = id
+        self.label = label
+        self.account = account
+        self.credentials = credentials
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.lastUsedAt = lastUsedAt
+        self.isLegacy = isLegacy
+    }
+
+    var updatedDate: Date? { FlexibleDateParser.date(from: updatedAt ?? createdAt) }
+    var lastUsedDate: Date? { FlexibleDateParser.date(from: lastUsedAt) }
 }
 
 // MARK: - 展示辅助

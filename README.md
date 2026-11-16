@@ -38,7 +38,7 @@ macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek** �
 | --- | --- | --- | --- |
 | Codex / ChatGPT | 本周剩余 % + 重置 | `~/.codex/auth.json` → 官方 usage 接口 | 否 |
 | DeepSeek | 余额（¥） | 官方余额接口 | API Key |
-| OpenCode | Zen 余额（$）或 Go 的 5h/周/月 | Console Cookie，或 Go API Key | 二选一 |
+| OpenCode | Zen 余额（$）或 Go 的 5h/周/月 | Console Cookie（可 opt-in 从 Chrome 导入），或 Go API Key | 二选一 |
 | Trae | 剩余积分 + 已用 / 总量 | 本机登录态 → `/trae/api/v2/pay/ide_user_ent_usage` | 否 |
 | WorkBuddy | 剩余积分 + 连续签到天数 | 本机 WorkBuddy 安全存储自动解封 → 官方 billing 接口 | 否 |
 
@@ -80,6 +80,99 @@ WorkBuddy 5.6+ 把桌面端 token 用 at-rest 信封加密，密钥只存在于�
 
 OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-console_session` Cookie 和 workspaceId。
 
+## 凭证、账号与成本
+
+### 自动获取的凭证（auto-cookie）
+
+- **OpenCode Zen**：内置浏览器登录 `opencode.ai` 成功后，自动从 WebKit cookie store 读取 `__Host-console_session`（兼容旧版 `auth`），再调 `/console/api/orgs` 取 workspaceId，写入 `providers.opencode.cookie / workspaceId / mode=zen` 并立即发一次请求验证。Cookie 会随会话过期，重新登录即可。
+- **WorkBuddy**：登录页会从 localStorage/sessionStorage 抓 token/uid 写入配置；桌面端更常用的是 collector 通过 WorkBuddy 自带 Electron 安全存储解封 at-rest token（见上一节），不需要网页登录。
+- **Trae / Codex**：没有网页登录可抓，直接复用本机 `storage.json` / `auth.json`。
+- **Chrome Cookie 导入（显式 opt-in，默认关闭）**：需要手动改 `config.json` 开启，App 目前没有对应开关：
+
+  ```json
+  {
+    "chromeCookies": {
+      "profile": "Default",
+      "dataDir": "",
+      "keychainService": "",
+      "keychainAccount": ""
+    },
+    "providers": {
+      "opencode": { "autoCookie": true },
+      "workbuddy": { "autoCookie": true }
+    }
+  }
+  ```
+
+  - 只读本机 Chrome 的 Cookies 数据库，按 `opencode.ai` / `www.workbuddy.cn` 域名筛选，并用 Chrome Safe Storage 口令解密 v10/v11 cookie；`dataDir` 留空时自动探测 `~/Library/Application Support/Google/Chrome`，`profile` 默认 `Default`。
+  - 首次可能弹一次钥匙串授权；解密失败、数据库被锁或没有可用 cookie 都静默回退到手动凭据，不影响 App。
+  - 手动 cookie/token 始终优先；OpenCode 的 `mode=go` 只走 API Key，不会读 Chrome。
+  - cookie 只在内存里解密使用，不写日志、不写回配置。
+- 手动填写或网页登录拿到的凭证最终落在 `~/.config/agent-quota/config.json`（600）；`scripts/quota` 不会打印这些字段。
+
+### 多账号
+
+每个 provider 支持一个账号数组，当前活动账号由 `activeAccount` 指定；旧版扁平字段（`providers.<id>.apiKey / cookie / token …`）继续兼容，没有 `accounts` 时会被当成唯一的“默认账号”：
+
+```json
+{
+  "providers": {
+    "opencode": {
+      "enabled": true,
+      "mode": "zen",
+      "activeAccount": "work",
+      "accounts": [
+        {
+          "id": "work",
+          "label": "Work",
+          "account": "me@example.com",
+          "credentials": { "cookie": "…", "workspaceId": "…" },
+          "createdAt": "2026-01-01T00:00:00Z",
+          "updatedAt": "2026-01-01T00:00:00Z",
+          "lastUsedAt": "2026-01-01T00:00:00Z"
+        },
+        {
+          "id": "personal",
+          "label": "Personal",
+          "account": "alt@example.com",
+          "credentials": { "apiKey": "…" }
+        }
+      ]
+    }
+  }
+}
+```
+
+- 设置 → 服务：某家配置了多于一个账号时才显示账户下拉；切换会调用 `AccountStore.activate`，把选中账号的凭据镜像回扁平字段，兼容只读扁平配置的 collector，然后立即刷新。
+- 当前 UI 只支持**切换**；新增/编辑/删除账号仍要改 `config.json`（或后续版本 UI），CLI 的 `accounts` 只读展示、不写入。手工编辑 `accounts[]` 后，建议在设置 → 服务里切换一次该账号，让凭据镜像到扁平字段，collector 才能读到。
+- 凭据字段按 provider：Codex `authPath/codexHome`、DeepSeek `apiKey`、OpenCode `apiKey/cookie/workspaceId`、Trae `edition`、WorkBuddy `token/uid`。
+- 同一时间只有一个活动账号，不能同时查询多个账号额度；`scripts/quota accounts` 只输出标签、账号标识和已填字段名，不会输出凭据值。
+
+### 成本口径
+
+面板和 CLI 的成本来自两类数据，都是本地估算、不是账单：
+
+- **OpenCode**：读本机 `~/.local/share/opencode/opencode.db` 的 `session_message`（优先）或 `session_v2`，汇总今日/近 7 天成本（USD）和 token；`providers.opencode.costEnabled=false` 可关闭，`AGENT_QUOTA_OPENCODE_DB` 可指定别的库。数据库不存在或不可读时，输出里就没有 `cost` 字段。
+- **DeepSeek**：相邻两次余额的下降额累加；充值 / 赠金上涨不计。
+- **Trae / WorkBuddy**：累计 consumed 计数器 − 当天 0 点基线；签到 +100、套餐重置不计入。
+- **Codex**：没有成本数据，只显示百分比窗口。
+- 采样：App 运行时由 App 自己刷新；App 关闭后由 `com.agentquota.usage` 每 5 分钟采样。跨天自动清空，只保留“今天”。
+- 参考值，不保证和账单一致；对账请以各家控制台为准。
+
+### 历史
+
+- App 每次成功拿到数据后（含单家定向刷新）会写 `~/.config/agent-quota/history.json`（600）：每个 provider 每天一条，保留最近 **7 天**，字段包括 `date / provider / usedPercent / remainingPercent / balance / consumed / cost / tokens / status / account / plan / updatedAt`；面板的 7 天趋势从这里读，OpenCode 成本行直接读本地库。
+- `last-snapshot.json` 是离线缓存，不是历史；`usage.json` 只保留当天消费。
+- CLI 兜底：App 没运行时，可用 `scripts/quota history --record` 把当天成本写到独立的 `history/YYYY-MM-DD.json`（与 `history.json` 不共用目录），再用 `scripts/quota history` 一并查看。
+
+每天自动记录（cron 示例，路径按本机修改；有 App 在跑时通常不需要）：
+
+```cron
+50 23 * * * cd /path/to/agent-quota-bar && PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin ./scripts/quota history --record >/dev/null 2>&1
+```
+
+同一天重复执行会覆盖当天文件；`usage.json` 不是今天时 `--record` 会拒绝（加 `--allow-stale` 可强制）。
+
 ## 设置
 
 ![设置](docs/settings.png)
@@ -90,8 +183,8 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
 - **通用**：刷新频率、系统代理、外观（跟随系统 / 浅色 / 深色）、开机自启动；
 - **自动化**（同一页）：自动签到、签到时间、签到状态；
 - **菜单栏**：自动切换 / 固定一家、图标大小、面板顺序；
-- **服务**：每家 provider 的显示开关 + 实时状态 + 配置入口；
-- **提醒**：充足/警戒/危险三种颜色、可拖拽的警戒/危险阈值、**积分阈值（Trae / WorkBuddy）与余额阈值（DeepSeek）分开设置**、低额度通知开关和百分比阈值、通知权限状态与测试通知；
+- **服务**：每家 provider 的显示开关 + 实时状态 + 配置入口；配置了多个账号时出现账户下拉，可直接切换；
+- **提醒**：充足/警戒/危险三种颜色、可拖拽的警戒/危险阈值、**积分阈值（Trae / WorkBuddy）与余额阈值（DeepSeek）分开设置**、低额度通知开关和百分比阈值、通知权限状态与测试通知；另有订阅到期（`notifications.subscriptionDays`，默认 3 天）、数据过期（`staleHours`，默认 12 小时）、凭据过期（`credentialDays`，默认 60 天）三类提醒，目前通过 `config.json` 调整阈值；
 - 面板右上角也直接有 **明暗切换**，不用进设置。
 
 ## 配置格式
@@ -114,14 +207,26 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
     "dangerColor": "#EF4444",
     "thresholds": { "trae": 200, "workbuddy": 500, "deepseek": 5 }
   },
-  "notifications": { "enabled": false, "percent": 20 },
+  "notifications": {
+    "enabled": false, "percent": 20,
+    "subscriptionDays": 3, "staleHours": 12, "credentialDays": 60
+  },
   "providerOrder": ["opencode", "codex", "deepseek", "trae", "workbuddy"],
+  "chromeCookies": {
+    "profile": "Default",
+    "dataDir": "",
+    "keychainService": "",
+    "keychainAccount": ""
+  },
   "providers": {
     "codex": { "enabled": true },
     "deepseek": { "enabled": true, "apiKey": "sk-..." },
-    "opencode": { "enabled": true, "mode": "go", "apiKey": "", "cookie": "", "workspaceId": "" },
+    "opencode": {
+      "enabled": true, "mode": "go", "apiKey": "", "cookie": "", "workspaceId": "",
+      "autoCookie": false, "costEnabled": true
+    },
     "trae": { "enabled": true, "edition": "cn" },
-    "workbuddy": { "enabled": true, "token": "", "uid": "" }
+    "workbuddy": { "enabled": true, "token": "", "uid": "", "autoCookie": false }
   }
 }
 ```
@@ -138,7 +243,30 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
 
 - 网络请求用系统 `curl`，自动支持系统代理和 TLS；
 - 每个 provider 一个 `collectXxx()`，单家失败只影响自己那一行；
-- 写入只有两处：保存配置、登录后写凭证；不会改第三方登录态。
+- 只写本机状态：`config.json`（含凭证）、`usage.json` / `history.json` / `last-snapshot.json`、两个 LaunchAgent plist；不会改第三方登录态。
+
+## 命令行 / JSON 集成
+
+`scripts/quota` 是零依赖 Node 小工具，直接复用仓库或已安装 App 里的 collector，不需要 App 在运行。完整字段、schema 和集成示例见 [docs/CLI.md](docs/CLI.md)：
+
+```bash
+./scripts/quota snapshot --pretty            # 实时查询一次，输出 collector 统一 JSON
+./scripts/quota snapshot --only=deepseek     # 只查一家，避免全量请求
+./scripts/quota cost --pretty                # 今日消费 + 余额/累计消费 + OpenCode 本地成本
+./scripts/quota cost --live                  # 先实时刷新再算（默认读 last-snapshot.json）
+./scripts/quota usage --pretty               # usage.json 原始状态（不含密钥）
+./scripts/quota history --pretty             # App 7 天历史 + CLI 记录的每日成本
+./scripts/quota history --record             # 兜底：记录今天成本到 history/YYYY-MM-DD.json
+./scripts/quota accounts --pretty            # 多账号列表（不含凭据值）
+./scripts/quota help
+```
+
+- `snapshot` 输出 collector schema（`schema / updatedAt / sampledAt / providers[]`），字段与 App 内部一致，适合 SketchyBar、状态栏脚本或 CI 做集成；可能含账号标识（email / uid），不要公开转贴。
+- `cost` 输出 `{ schema, ok, day, stale, snapshotSource, snapshotAt, providers[{ id, name, unit, todaySpent, last7Days?, balance|consumed, tokens?, source?, sampledAt }] }`。DeepSeek / Trae / WorkBuddy 来自 `usage.json`，OpenCode 来自快照里的 `provider.cost`（本地库）。默认不联网，`--live` 才刷新；`stale: true` 表示 `usage.json` 不是今天。
+- `history` 同时返回 `app`（`history.json`，近 7 天）和 `cli`（`history/YYYY-MM-DD.json` 兜底记录）；`--record` 只写 CLI 那份（0600、按天覆盖）。
+- `accounts` 读取 `config.json`，输出每家 `accounts[]`、`activeAccount`、`mode`（`accounts` / `legacy` / `none`）以及 `credentialFields`（只列字段名）。
+- `--only=id,id` 支持 `codex,deepseek,opencode,trae,workbuddy`；成本覆盖 DeepSeek / Trae / WorkBuddy / OpenCode。
+- 环境变量：`AGENT_QUOTA_CONFIG` 可指向另一份配置（App / collector / CLI 共用，`usage.json`、`last-snapshot.json`、`history.json`、`history/` 都取同级目录）；`AGENT_QUOTA_COLLECTOR` 可指定 `collector.js` 路径。默认先找仓库 `collector/collector.js`，再找已安装 App 的 `Contents/Resources/collector.js`。
 
 ## 每日签到
 
@@ -165,12 +293,14 @@ Trae 与 WorkBuddy 每天自动签到，默认 09:00，失败每 30 分钟重试
 
 | 路径 | 内容 |
 | --- | --- |
-| `~/.config/agent-quota/config.json` | 配置（含 API Key / token，600） |
+| `~/.config/agent-quota/config.json` | 配置（含 API Key / token / 多账号，600） |
 | `~/.config/agent-quota/usage.json` | 今日消费累计（DeepSeek / Trae / WorkBuddy） |
-| `~/.config/agent-quota/last-snapshot.json` | 最近一次成功快照（离线时展示） |
+| `~/.config/agent-quota/last-snapshot.json` | 最近一次成功快照（离线时展示，不是历史） |
+| `~/.config/agent-quota/history.json` | App 的 7 天额度/成本历史（600） |
 | `~/.config/agent-quota/workbuddy-at-rest` | WorkBuddy at-rest 密钥缓存（600） |
 | `~/.config/agent-quota/checkin.log` | 后台签到输出 |
 | `~/.config/agent-quota/usage.log` | 后台用量采样输出 |
+| `~/.config/agent-quota/history/YYYY-MM-DD.json` | CLI `history --record` 的兜底成本记录（可选，与 history.json 分开） |
 
 接口逻辑参考并适配自 [wb-trae-checkin](https://github.com/3338320742zh-collab/wb-trae-checkin) 与 [workbuddy-checkin](https://github.com/tars1230/workbuddy-checkin)，只保留 macOS 需要的部分，没有引入 Windows 计划任务/通知代码。
 
@@ -189,26 +319,29 @@ Trae 与 WorkBuddy 每天自动签到，默认 09:00，失败每 30 分钟重试
 
 ```
 Sources/AgentQuotaBar/
-├── AppDelegate.swift              # 状态栏、菜单、单实例逻辑
-├── PopoverViewController.swift    # 平面列表面板 + 拖动排序
-├── SettingsWindowController.swift # 设置
+├── AppDelegate.swift              # 状态栏、菜单、单实例、刷新调度
+├── PopoverViewController.swift    # 面板 + 拖动排序 + 7 天趋势
+├── SettingsWindowController.swift # 设置 + 多账号切换
 ├── SetupWindowController.swift    # 每家配置向导
 ├── WebLoginWindowController.swift # 内置浏览器登录 + 自动抓凭证
 ├── MenuBarIcon.swift              # logo + 环 + 数字
-├── ProviderLogo.swift             # 品牌 logo 加载/着色
-├── ProviderStyle.swift            # 品牌色、严重程度阈值
-├── QuotaStyle.swift               # 可配置颜色 / 阈值
-├── NotificationService.swift      # 低额度通知
-├── BackgroundCheckin.swift        # LaunchAgent 后台签到
-├── QuotaService.swift / ConfigStore.swift / Models.swift
+├── ProviderRegistry / ProviderActivity / RefreshScheduler.swift
+├── CostStore.swift                # OpenCode 本地成本
+├── HistoryStore.swift             # history.json（7 天）
+├── AccountStore.swift             # 多账号配置
+├── ProviderLogo.swift / ProviderStyle.swift / QuotaStyle.swift / Theme.swift
+├── NotificationService.swift / BackgroundCheckin.swift / CheckinService.swift
+├── QuotaService.swift / ConfigStore.swift / UsageTracker.swift / UsageSampler.swift
 collector/collector.js             # 五家数据适配（打包进 Contents/Resources/）
 collector/trae-crypto.js           # Trae tc 解密（MIT 署名）
 collector/workbuddy-key/           # 调 WorkBuddy Electron 读 at-rest 密钥的 helper，随 App 一起打包
 scripts/build_app.sh               # 构建 + 生成 Info.plist + ad-hoc 签名/校验
 scripts/install.sh                 # 校验后原子安装（备份/回滚）
 scripts/uninstall.sh               # 卸载 App / LaunchAgent / 本地数据
+scripts/quota                      # CLI：snapshot / cost / usage / history / accounts
 Resources/logo-*.svg               # simple-icons（CC0）
 docs/现有方案评估.md
+docs/CLI.md                        # CLI 字段与 JSON schema 明细
 ```
 
 ## 已知限制
@@ -219,6 +352,9 @@ docs/现有方案评估.md
 - WorkBuddy 登录态失效时，重新打开 WorkBuddy 桌面端即可；App 会在下次刷新时重新解封。
 - Trae 解密依赖客户端实现，客户端升级可能失效。
 - 所有接口都是非公开接口，仅适合本机、本人账号、只读用途。
+- 多账号目前只支持在设置页“切换”已配置账号；新增/编辑/删除账号仍要改 `config.json`，且同一时间只能查询一个活动账号。
+- 成本是本地估算：DeepSeek / Trae / WorkBuddy 来自采样差值，OpenCode 来自本地库，Codex 没有成本；不保证与账单一致。
+- `history.json` 只保留最近 7 天；更长的历史需要自己导出/归档。
 - 低额度通知依赖 App 运行；后台签到由 LaunchAgent 独立执行，不受影响。
 
 ## 分发、更新与许可

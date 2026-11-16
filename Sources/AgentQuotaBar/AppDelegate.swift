@@ -65,6 +65,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popoverController.onRefresh = { [weak self] in
             self?.scheduler.refreshNow()
         }
+        popoverController.historyProvider = { [weak self] in
+            guard let self else { return [] }
+            return HistoryStore.shared.remainingValues(provider: self.activeProviderID ?? "codex")
+        }
+        popoverController.historyCaption = "近 7 天剩余"
+
         popoverController.onCheckin = { [weak self] in
             self?.checkin.runNow(manual: true)
         }

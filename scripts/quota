@@ -1,0 +1,501 @@
+#!/usr/bin/env node
+/**
+ * AgentQuotaBar CLI —— 把 collector 的统一 JSON 和本地成本数据暴露给脚本/终端。
+ *
+ * 零依赖，只读（history --record 例外，会写 ~/.config/agent-quota/history/）。
+ * 不会打印 config.json 里的 API Key / Cookie / token。
+ *
+ * 用法见 `scripts/quota help` 或 README 的「命令行 / JSON 集成」。
+ */
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const HOME = os.homedir();
+const NAMES = {
+  codex: 'Codex',
+  deepseek: 'DeepSeek',
+  opencode: 'OpenCode',
+  trae: 'Trae',
+  workbuddy: 'WorkBuddy',
+};
+// usage.json 只累计这三家；OpenCode 的成本来自本地 OpenCode 数据库（collector 的 cost 字段）。
+const USAGE_COST_IDS = ['deepseek', 'trae', 'workbuddy'];
+const COST_IDS = [...USAGE_COST_IDS, 'opencode'];
+// 与 AccountStore.credentialKeysByProvider 保持一致，只用于判断“有没有填”，绝不输出值。
+const ACCOUNT_KEYS = {
+  codex: ['authPath', 'codexHome'],
+  deepseek: ['apiKey'],
+  opencode: ['apiKey', 'cookie', 'workspaceId'],
+  trae: ['edition'],
+  workbuddy: ['token', 'uid'],
+};
+
+function expandTilde(p) {
+  if (p === '~') return HOME;
+  if (p.startsWith('~/')) return path.join(HOME, p.slice(2));
+  return p;
+}
+
+const CONFIG_PATH = process.env.AGENT_QUOTA_CONFIG
+  ? expandTilde(process.env.AGENT_QUOTA_CONFIG)
+  : path.join(HOME, '.config', 'agent-quota', 'config.json');
+const DATA_DIR = path.dirname(CONFIG_PATH);
+const USAGE_PATH = path.join(DATA_DIR, 'usage.json');
+const SNAPSHOT_PATH = path.join(DATA_DIR, 'last-snapshot.json');
+const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+const HISTORY_DIR = path.join(DATA_DIR, 'history');
+
+// ---------------------------------------------------------------- 输出
+
+function emit(value, pretty) {
+  process.stdout.write(JSON.stringify(value, null, pretty ? 2 : 0) + '\n');
+}
+
+function fail(code, message, exitCode = 1, extra = {}) {
+  emit({ schema: 1, ok: false, error: { code, message }, ...extra }, true);
+  process.exit(exitCode);
+}
+
+// ---------------------------------------------------------------- 参数
+
+function parseArgs(argv) {
+  const opts = {
+    command: null,
+    pretty: false,
+    live: false,
+    record: false,
+    allowStale: false,
+    only: null,
+    limit: 30,
+  };
+  const positionals = [];
+  for (const arg of argv) {
+    if (arg === '--pretty') opts.pretty = true;
+    else if (arg === '--live') opts.live = true;
+    else if (arg === '--record') opts.record = true;
+    else if (arg === '--allow-stale') opts.allowStale = true;
+    else if (arg === '--help' || arg === '-h') opts.command = 'help';
+    else if (arg.startsWith('--only=')) {
+      const ids = arg
+        .slice('--only='.length)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!ids.length) fail('bad_option', '--only= 不能为空', 2);
+      const unknown = ids.filter((id) => !NAMES[id]);
+      if (unknown.length) fail('bad_option', `未知 provider：${unknown.join(', ')}`, 2);
+      opts.only = ids;
+    } else if (arg.startsWith('--limit=')) {
+      const n = Number(arg.slice('--limit='.length));
+      if (!Number.isFinite(n) || n < 1 || n > 3650) {
+        fail('bad_option', '--limit= 需要 1–3650 的整数', 2);
+      }
+      opts.limit = Math.floor(n);
+    } else if (arg.startsWith('-')) {
+      fail('bad_option', `未知参数：${arg}（scripts/quota help 查看用法）`, 2);
+    } else {
+      positionals.push(arg);
+    }
+  }
+  opts.command = opts.command || positionals[0] || 'help';
+  if (positionals.length > 1) {
+    fail('bad_option', `多余参数：${positionals.slice(1).join(' ')}`, 2);
+  }
+  return opts;
+}
+
+// ---------------------------------------------------------------- 本地数据
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function todayKey() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function round(n, digits = 4) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return null;
+  const factor = 10 ** digits;
+  return Math.round(n * factor) / factor;
+}
+
+function loadUsage() {
+  const usage = readJson(USAGE_PATH);
+  if (!usage || typeof usage !== 'object') {
+    fail(
+      'usage_missing',
+      `未找到可解析的 ${USAGE_PATH}；先运行 App 或 com.agentquota.usage 采样一次`
+    );
+  }
+  return usage;
+}
+
+function loadCachedSnapshot() {
+  const snapshot = readJson(SNAPSHOT_PATH);
+  return snapshot && Array.isArray(snapshot.providers) ? snapshot : null;
+}
+
+// ---------------------------------------------------------------- collector
+
+function locateCollector() {
+  const override = process.env.AGENT_QUOTA_COLLECTOR;
+  if (override) {
+    const custom = expandTilde(override);
+    if (!fs.existsSync(custom)) {
+      fail('collector_missing', `AGENT_QUOTA_COLLECTOR 指向的文件不存在：${custom}`);
+    }
+    return custom;
+  }
+  const candidates = [
+    path.join(__dirname, '..', 'collector', 'collector.js'),
+    path.join(HOME, 'Applications', 'AgentQuotaBar.app', 'Contents', 'Resources', 'collector.js'),
+    '/Applications/AgentQuotaBar.app/Contents/Resources/collector.js',
+    path.join(__dirname, '..', 'dist', 'AgentQuotaBar.app', 'Contents', 'Resources', 'collector.js'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  fail(
+    'collector_missing',
+    '找不到 collector.js；在仓库内运行，或用 AGENT_QUOTA_COLLECTOR=/path/to/collector.js 指定'
+  );
+}
+
+function runCollector(only) {
+  const collector = locateCollector();
+  const args = [collector];
+  if (only && only.length) args.push(`--only=${only.join(',')}`);
+  const result = spawnSync(process.execPath, args, {
+    encoding: 'utf8',
+    env: process.env,
+    timeout: 120000,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error) {
+    fail('collector_failed', `collector 启动失败：${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const detail = String(result.stderr || '').trim().slice(-500);
+    fail('collector_failed', `collector 退出码 ${result.status}${detail ? `：${detail}` : ''}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(String(result.stdout || ''));
+  } catch {
+    fail('collector_bad_json', 'collector 没有输出合法 JSON');
+  }
+  return parsed;
+}
+
+// ---------------------------------------------------------------- 成本
+
+function costIds(only) {
+  const wanted = only || COST_IDS;
+  return COST_IDS.filter((id) => wanted.includes(id));
+}
+
+function buildCost({ live, only, allowStale = false, forRecord = false }) {
+  const ids = costIds(only);
+  const needsUsage = ids.some((id) => USAGE_COST_IDS.includes(id));
+  const usage = needsUsage ? loadUsage() : null;
+  const day = usage && typeof usage.day === 'string' ? usage.day : null;
+  const stale = usage ? day !== todayKey() : null;
+  if (forRecord && stale && !allowStale) {
+    fail(
+      'stale_usage',
+      `usage.json 还是 ${day || '未知日期'} 的数据，不是今天；等 App/用量采样更新，或加 --allow-stale`
+    );
+  }
+
+  const snapshot = ids.length ? (live ? runCollector(ids) : loadCachedSnapshot()) : null;
+  const snapshotMap = new Map(
+    ((snapshot && snapshot.providers) || []).map((provider) => [provider.id, provider])
+  );
+
+  const providers = ids.map((id) => {
+    const cached = snapshotMap.get(id) || {};
+    if (id === 'opencode') {
+      const entry = {
+        id,
+        name: NAMES[id],
+        unit: 'USD',
+        todaySpent: null,
+      };
+      const cost = cached.cost;
+      if (cost && (typeof cost.today === 'number' || typeof cost.last7Days === 'number')) {
+        if (typeof cost.currency === 'string' && cost.currency) entry.unit = cost.currency;
+        entry.todaySpent = round(cost.today);
+        if (typeof cost.last7Days === 'number') entry.last7Days = round(cost.last7Days);
+        if (cost.tokens && typeof cost.tokens === 'object') {
+          entry.tokens = { today: cost.tokens.today || null, last7Days: cost.tokens.last7Days || null };
+        }
+        entry.source = 'opencode-local-db';
+      } else {
+        entry.note = '没有 OpenCode 本地成本数据（需要 OpenCode 本地库，或先 --live 刷新）';
+      }
+      return entry;
+    }
+
+    const state = (usage && usage[id] && typeof usage[id] === 'object' ? usage[id] : {}) || {};
+    const entry = {
+      id,
+      name: NAMES[id],
+      unit: id === 'deepseek' ? 'CNY' : 'credits',
+      todaySpent: round(state.spent),
+    };
+    if (id === 'deepseek' && typeof cached.balance === 'number') entry.balance = cached.balance;
+    if (id !== 'deepseek' && typeof cached.consumed === 'number') entry.consumed = cached.consumed;
+    if (typeof state.updatedAt === 'string') entry.sampledAt = state.updatedAt;
+    return entry;
+  });
+
+  const result = {
+    schema: 1,
+    ok: true,
+    day,
+    generatedAt: new Date().toISOString(),
+    stale,
+    snapshotSource: ids.length ? (live ? 'live' : snapshot ? 'cache' : 'none') : 'none',
+    snapshotAt: (snapshot && snapshot.updatedAt) || null,
+    providers,
+  };
+  if (!ids.length) {
+    result.note = '成本覆盖 DeepSeek / Trae / WorkBuddy（usage 差值）和 OpenCode（本地库）；Codex 没有成本数据。';
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------- 命令
+
+function cmdSnapshot(opts) {
+  emit(runCollector(opts.only), opts.pretty);
+}
+
+function cmdCost(opts) {
+  emit(buildCost({ live: opts.live, only: opts.only }), opts.pretty);
+}
+
+function cmdUsage(opts) {
+  const usage = loadUsage();
+  const day = typeof usage.day === 'string' ? usage.day : null;
+  emit(
+    {
+      schema: 1,
+      ok: true,
+      path: USAGE_PATH,
+      day,
+      stale: day !== todayKey(),
+      usage,
+    },
+    opts.pretty
+  );
+}
+
+function cmdHistory(opts) {
+  if (opts.record) {
+    const record = buildCost({
+      live: opts.live,
+      only: opts.only,
+      allowStale: opts.allowStale,
+      forRecord: true,
+    });
+    const stamped = { ...record, recordedAt: new Date().toISOString() };
+    const file = path.join(HISTORY_DIR, `${todayKey()}.json`);
+    try {
+      fs.mkdirSync(HISTORY_DIR, { recursive: true, mode: 0o700 });
+      const tmp = path.join(HISTORY_DIR, `.${path.basename(file)}.tmp-${process.pid}`);
+      fs.writeFileSync(tmp, JSON.stringify(stamped, null, 2) + '\n', { mode: 0o600 });
+      fs.chmodSync(tmp, 0o600);
+      fs.renameSync(tmp, file);
+    } catch (e) {
+      fail('history_write_failed', `写入 ${file} 失败：${e.message}`);
+    }
+    emit({ schema: 1, ok: true, recorded: file, record: stamped }, opts.pretty);
+    return;
+  }
+
+  // App 的 HistoryStore 文件（近 7 天，额度/余额/成本），优先展示
+  const appRaw = readJson(HISTORY_FILE);
+  const app = { path: HISTORY_FILE, available: false, retentionDays: 7, entries: [] };
+  if (appRaw) {
+    const entries = Array.isArray(appRaw)
+      ? appRaw
+      : Array.isArray(appRaw.entries)
+        ? appRaw.entries
+        : null;
+    if (entries) {
+      app.available = true;
+      app.entries = opts.only
+        ? entries.filter((entry) => opts.only.includes(entry.provider))
+        : entries;
+    }
+  }
+
+  // CLI 自己的按天成本记录（history/YYYY-MM-DD.json；没有 App 历史时的兜底）
+  let names = [];
+  try {
+    names = fs.readdirSync(HISTORY_DIR).filter((n) => /^\d{4}-\d{2}-\d{2}\.json$/.test(n));
+  } catch {}
+  names.sort().reverse();
+  const days = [];
+  for (const name of names.slice(0, opts.limit)) {
+    const record = readJson(path.join(HISTORY_DIR, name));
+    if (!record) continue;
+    if (opts.only && Array.isArray(record.providers)) {
+      const keep = new Set(opts.only);
+      record.providers = record.providers.filter((provider) => keep.has(provider.id));
+    }
+    days.push(record);
+  }
+
+  emit({ schema: 1, ok: true, app, cli: { dir: HISTORY_DIR, days } }, opts.pretty);
+}
+
+function cmdAccounts(opts) {
+  const config = readJson(CONFIG_PATH);
+  if (!config) {
+    fail('config_missing', `未找到可解析的 ${CONFIG_PATH}；先运行一次 App 或 collector`);
+  }
+  const providers = config.providers && typeof config.providers === 'object' ? config.providers : {};
+  const ids = opts.only || Object.keys(NAMES).filter((id) => providers[id]);
+
+  const out = ids.map((id) => {
+    const node = providers[id] && typeof providers[id] === 'object' ? providers[id] : {};
+    const stored = Array.isArray(node.accounts) ? node.accounts : [];
+    let accounts = [];
+    if (stored.length) {
+      accounts = stored.map((account) => {
+        const credentials =
+          account && account.credentials && typeof account.credentials === 'object'
+            ? account.credentials
+            : {};
+        const fields = Object.keys(credentials).filter((key) => {
+          const value = credentials[key];
+          return value !== undefined && value !== null && String(value).trim() !== '';
+        });
+        return {
+          id: account.id || null,
+          label: account.label || account.id || null,
+          account: account.account || null,
+          legacy: false,
+          credentialFields: fields,
+          updatedAt: account.updatedAt || null,
+          lastUsedAt: account.lastUsedAt || null,
+        };
+      });
+    } else {
+      const fields = (ACCOUNT_KEYS[id] || []).filter((key) => {
+        const value = node[key];
+        return typeof value === 'string' && value.trim() !== '';
+      });
+      if (fields.length || (typeof node.account === 'string' && node.account.trim())) {
+        accounts = [
+          {
+            id: 'default',
+            label: '默认账号',
+            account: typeof node.account === 'string' && node.account.trim() ? node.account : null,
+            legacy: true,
+            credentialFields: fields,
+          },
+        ];
+      }
+    }
+
+    const storedActive =
+      typeof node.activeAccount === 'string' && node.activeAccount.trim()
+        ? node.activeAccount
+        : null;
+    const active =
+      storedActive && accounts.some((account) => account.id === storedActive)
+        ? storedActive
+        : accounts[0]
+          ? accounts[0].id
+          : null;
+    return {
+      id,
+      name: NAMES[id] || id,
+      mode: stored.length ? 'accounts' : accounts.length ? 'legacy' : 'none',
+      activeAccount: active,
+      accounts,
+    };
+  });
+
+  emit({ schema: 1, ok: true, path: CONFIG_PATH, providers: out }, opts.pretty);
+}
+
+function help() {
+  const lines = [
+    'AgentQuotaBar CLI —— collector / 本地成本 JSON',
+    '',
+    '用法: scripts/quota <command> [options]',
+    '',
+    '命令:',
+    '  snapshot            实时查询一次 collector，把统一 JSON 打到 stdout',
+    '  cost                今日消费：usage 差值（DS/Trae/WorkBuddy）+ OpenCode 本地库',
+    '  usage               输出 usage.json 的原始内容（只含消费状态，不含密钥）',
+    '  history             App 的 7 天历史（history.json）+ CLI 按天成本记录',
+    '  accounts            多账号配置（只列账号/字段名，不输出凭据值）',
+    '  help                显示本帮助',
+    '',
+    '通用选项:',
+    '  --pretty            缩进 2 空格（默认单行 JSON）',
+    '  --only=id,id        只输出指定 provider（snapshot/cost/history/accounts）',
+    '  --live              cost / history --record 实时跑 collector（默认读 last-snapshot.json）',
+    '  --record            history：把今天的成本写入 <数据目录>/history/YYYY-MM-DD.json',
+    '  --allow-stale       usage.json 不是今天时也允许 --record',
+    '  --limit=N           history：CLI 记录最多列出 N 天（默认 30）',
+    '',
+    '环境变量:',
+    '  AGENT_QUOTA_CONFIG     配置路径（默认 ~/.config/agent-quota/config.json；',
+    '                         usage.json / last-snapshot.json / history.json 都放同级目录）',
+    '  AGENT_QUOTA_COLLECTOR  collector.js 路径（默认先找仓库 collector/，再找已安装的 App）',
+    '',
+    '说明:',
+    '  - cost 覆盖 DeepSeek / Trae / WorkBuddy 的今日消费，以及 OpenCode 的本地成本；',
+    '    Codex 没有成本数据。OpenCode 成本字段来自 snapshot 的 provider.cost。',
+    '  - history --record 只是 App 未运行时的兜底；App 正常刷新时写 history.json。',
+    '  - snapshot 可能包含账号标识（email / uid），不要公开转贴。',
+  ];
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
+function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  switch (opts.command) {
+    case 'snapshot':
+      cmdSnapshot(opts);
+      break;
+    case 'cost':
+      cmdCost(opts);
+      break;
+    case 'usage':
+      cmdUsage(opts);
+      break;
+    case 'history':
+      cmdHistory(opts);
+      break;
+    case 'accounts':
+      cmdAccounts(opts);
+      break;
+    case 'help':
+      help();
+      break;
+    default:
+      process.stderr.write(`未知命令：${opts.command}\n\n`);
+      help();
+      process.exit(2);
+  }
+}
+
+main();

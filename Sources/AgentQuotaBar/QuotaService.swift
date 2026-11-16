@@ -113,6 +113,7 @@ final class QuotaService {
             isOffline = false
             errorMessage = nil
             UsageTracker.shared.record(snapshot: merged, only: Set(only ?? []))
+            HistoryStore.shared.record(snapshot: merged)
             saveCache(merged)
             return
         }
@@ -134,6 +135,7 @@ final class QuotaService {
         )
         snapshot = merged
         UsageTracker.shared.record(snapshot: merged)
+        HistoryStore.shared.record(snapshot: merged)
         saveCache(merged)
     }
 

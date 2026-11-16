@@ -30,12 +30,14 @@ const DEFAULT_CONFIG = {
   refreshSeconds: 300,
   proxy: 'auto',
   proxyHosts: ['chatgpt.com', 'auth.openai.com'],
+  // 自动导入浏览器 Cookie 需要显式开启；默认关闭，手动 cookie/token 始终优先。
+  chromeCookies: { profile: 'Default', dataDir: '', keychainService: '', keychainAccount: '' },
   providers: {
     codex: { enabled: true },
     deepseek: { enabled: true, apiKey: '' },
-    opencode: { enabled: true, apiKey: '', cookie: '', workspaceId: '' },
+    opencode: { enabled: true, apiKey: '', cookie: '', workspaceId: '', autoCookie: false, costEnabled: true },
     trae: { enabled: true, edition: 'cn' },
-    workbuddy: { enabled: true, token: '', uid: '' },
+    workbuddy: { enabled: true, token: '', uid: '', autoCookie: false },
   },
 };
 
@@ -893,7 +895,16 @@ function collectWorkBuddy(cfg) {
       source = found.file;
     }
   }
-  if (!token) {
+  // token 优先；没有 token 时才尝试 opt-in 的 Chrome Cookie，失败静默回退手动配置。
+  let cookie = '';
+  if (!token && chromeCookieImportEnabled(cfg)) {
+    const imported = readChromeCookiesForHost('www.workbuddy.cn');
+    if (imported.header) {
+      cookie = imported.header;
+      source = 'chrome';
+    }
+  }
+  if (!token && !cookie) {
     return unconfigured(
       'workbuddy',
       'WorkBuddy',
@@ -901,24 +912,29 @@ function collectWorkBuddy(cfg) {
     );
   }
 
+  const headers = {
+    'X-User-Id': uid,
+    'X-Client-Platform': 'web',
+    Accept: 'application/json, text/plain, */*',
+    'Content-Type': 'application/json',
+    Origin: 'https://www.workbuddy.cn',
+    Referer: 'https://www.workbuddy.cn/profile/plans-usage',
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  else headers.Cookie = cookie;
+
   const res = http('https://www.workbuddy.cn/billing/meter/get-user-resource-summary', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'X-User-Id': uid,
-      'X-Client-Platform': 'web',
-      Accept: 'application/json, text/plain, */*',
-      'Content-Type': 'application/json',
-      Origin: 'https://www.workbuddy.cn',
-      Referer: 'https://www.workbuddy.cn/profile/plans-usage',
-    },
+    headers,
     body: '{}',
   });
   const code = res.json?.code;
   if (res.status === 401 || res.status === 403 || code === 10085) {
-    const hint = source === 'config'
-      ? 'Token 已失效，请更新'
-      : 'token 已过期，请更新';
+    const hint = source === 'chrome'
+      ? 'Chrome Cookie 已失效，请登录 workbuddy.cn 后刷新，或粘贴 token'
+      : source === 'config'
+        ? 'Token 已失效，请更新'
+        : 'token 已过期，请更新';
     return failed('workbuddy', 'WorkBuddy', hint);
   }
   if (res.status !== 200 || !res.json) {
@@ -960,9 +976,339 @@ function collectWorkBuddy(cfg) {
   return provider('workbuddy', 'WorkBuddy', remaining > 0 ? 'ok' : 'warn', metrics, {
     account: uid,
     headline: `${Math.floor(remaining)}`,
-    detail: source === 'auto' ? 'WorkBuddy 积分（自动）' : `WorkBuddy 积分（${source.split('.')[0]}）`,
+    detail: source === 'chrome'
+      ? 'WorkBuddy 积分（Chrome Cookie）'
+      : source === 'auto'
+        ? 'WorkBuddy 积分（自动）'
+        : `WorkBuddy 积分（${source.split('.')[0]}）`,
     consumed: total - remaining,
   });
+}
+
+// ---------------------------------------------------------------- 本机 SQLite
+
+const SQLITE_BIN = '/usr/bin/sqlite3';
+const SQLITE_TIMEOUT_MS = 5000;
+
+/** 只读执行一条 SQL 并解析 sqlite3 -json 输出；失败抛给调用方决定是否回退。 */
+function runSqliteJson(databasePath, sql, timeout = SQLITE_TIMEOUT_MS) {
+  const output = execFileSync(SQLITE_BIN, ['-readonly', '-json', databasePath, sql], {
+    encoding: 'utf8',
+    timeout,
+    maxBuffer: 4 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  if (!output) return [];
+  const parsed = JSON.parse(output);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+// ---------------------------------------------------------------- Chrome Cookie（opt-in）
+
+const CHROME_DATA_DIR = path.join(HOME, 'Library', 'Application Support', 'Google', 'Chrome');
+const CHROME_SAFE_STORAGE = 'Chrome Safe Storage';
+const CHROME_COOKIE_MAX_HEADER = 8192;
+
+// 只在内存中缓存，绝不写日志/配置文件。
+let _chromeSafeStoragePassword;
+
+function chromeCookieOptions() {
+  const raw = CONFIG.chromeCookies && typeof CONFIG.chromeCookies === 'object' ? CONFIG.chromeCookies : {};
+  const pickString = (key, fallback) => {
+    const value = typeof raw[key] === 'string' ? raw[key].trim() : '';
+    return value || fallback;
+  };
+  return {
+    dataDir: pickString('dataDir', CHROME_DATA_DIR),
+    profile: pickString('profile', 'Default'),
+    keychainService: pickString('keychainService', CHROME_SAFE_STORAGE),
+    keychainAccount: pickString('keychainAccount', 'Chrome'),
+  };
+}
+
+function chromeCookieDatabasePath(options) {
+  if (process.platform !== 'darwin') return null;
+  const profile = String(options.profile || '');
+  // profile 来自配置，只允许普通目录名，避免拼出任意路径。
+  if (!/^[A-Za-z0-9 ._-]+$/.test(profile) || profile === '.' || profile === '..') return null;
+  const base = path.join(String(options.dataDir || CHROME_DATA_DIR), profile);
+  for (const relative of ['Network/Cookies', 'Cookies']) {
+    const candidate = path.join(base, relative);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * 读取 Chrome Safe Storage 口令。只放在内存里用，绝不写日志/配置；
+ * `security` 可能弹一次钥匙串授权，失败就回退手动 Cookie。
+ */
+function chromeSafeStoragePassword(options) {
+  if (_chromeSafeStoragePassword) return _chromeSafeStoragePassword;
+  if (process.platform !== 'darwin') return null;
+  try {
+    const result = spawnSync(
+      '/usr/bin/security',
+      ['find-generic-password', '-w', '-s', options.keychainService, '-a', options.keychainAccount],
+      { encoding: 'utf8', timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] }
+    );
+    if (result.status !== 0) return null;
+    // 只去掉 security 追加的换行；口令本身可能含空格，不能 trim。
+    const password = String(result.stdout || '').replace(/\r?\n$/, '');
+    if (!password) return null;
+    _chromeSafeStoragePassword = password;
+    return password;
+  } catch {
+    return null;
+  }
+}
+
+function unpadPkcs7(buffer) {
+  if (!buffer || !buffer.length) return null;
+  const pad = buffer[buffer.length - 1];
+  if (pad < 1 || pad > 16 || pad > buffer.length) return null;
+  for (let i = buffer.length - pad; i < buffer.length; i += 1) {
+    if (buffer[i] !== pad) return null;
+  }
+  return buffer.subarray(0, buffer.length - pad);
+}
+
+/**
+ * 解密 macOS Chrome/Chromium 的 v10/v11 Cookie：
+ * key = PBKDF2(SHA1, Chrome Safe Storage 口令, "saltysalt", 1003, 16)，
+ * AES-128-CBC + 16 个空格 IV；失败返回 null（不抛错、不输出内容）。
+ */
+function decryptChromeCookieValue(encrypted, password, hostKey) {
+  const buffer = Buffer.isBuffer(encrypted) ? encrypted : Buffer.from(encrypted || '');
+  if (!password || buffer.length <= 3) return null;
+  const prefix = buffer.subarray(0, 3).toString('latin1');
+  if (prefix !== 'v10' && prefix !== 'v11') return null;
+  let plain;
+  try {
+    const key = crypto.pbkdf2Sync(password, 'saltysalt', 1003, 16, 'sha1');
+    const decipher = crypto.createDecipheriv('aes-128-cbc', key, Buffer.alloc(16, 0x20));
+    decipher.setAutoPadding(false);
+    plain = Buffer.concat([decipher.update(buffer.subarray(3)), decipher.final()]);
+  } catch {
+    return null;
+  }
+  plain = unpadPkcs7(plain);
+  if (!plain || !plain.length) return null;
+  // 部分 Chromium 版本会在明文前加 32 字节 host_key 的 SHA-256。
+  const hostHash = crypto.createHash('sha256').update(String(hostKey || '')).digest();
+  if (plain.length > 32 && plain.subarray(0, 32).equals(hostHash)) plain = plain.subarray(32);
+  return plain.length ? plain : null;
+}
+
+function cookieDomainCandidates(hostname) {
+  const labels = String(hostname || '').toLowerCase().split('.').filter(Boolean);
+  const domains = [];
+  // 例如 www.workbuddy.cn → www.workbuddy.cn/.www.workbuddy.cn/workbuddy.cn/.workbuddy.cn
+  for (let i = 0; i <= labels.length - 2; i += 1) {
+    const domain = labels.slice(i).join('.');
+    domains.push(domain, `.${domain}`);
+  }
+  return [...new Set(domains)];
+}
+
+function safeCookieValue(value) {
+  const text = String(value || '').trim();
+  if (!text || text.length > 4096) return false;
+  // Cookie 值只收可打印 ASCII，排除 ; 和控制字符，避免破坏 Cookie 头。
+  return /^[\x20-\x3A\x3C-\x7E]+$/.test(text);
+}
+
+function selectChromeCookies(databasePath, requestHost, password) {
+  const domains = cookieDomainCandidates(requestHost);
+  if (!domains.length) return { header: '', count: 0 };
+  const nowChromeUs = Math.round((Date.now() + 11644473600000) * 1000);
+  const domainList = domains.map((domain) => `'${domain.replace(/'/g, "''")}'`).join(', ');
+  const rows = runSqliteJson(
+    databasePath,
+    `
+    SELECT host_key, name, value, hex(encrypted_value) AS encrypted_hex, path, expires_utc
+    FROM cookies
+    WHERE host_key IN (${domainList})
+      AND (expires_utc = 0 OR expires_utc > ${nowChromeUs})
+    ORDER BY host_key DESC, length(path) DESC, name ASC;
+    `
+  );
+  const unique = new Map();
+  for (const row of rows) {
+    const name = String(row.name || '');
+    if (!name || !HEADER_NAME_RE.test(name)) continue;
+    let value = String(row.value || '');
+    if (!value && row.encrypted_hex) {
+      const decrypted = decryptChromeCookieValue(
+        Buffer.from(String(row.encrypted_hex), 'hex'),
+        password,
+        String(row.host_key || '')
+      );
+      if (decrypted) value = decrypted.toString('utf8');
+    }
+    if (!safeCookieValue(value) || unique.has(name)) continue;
+    unique.set(name, value);
+  }
+  if (!unique.size) return { header: '', count: 0 };
+  const ordered = [...unique.entries()].sort((a, b) => {
+    if (a[0] === '__Host-console_session') return -1;
+    if (b[0] === '__Host-console_session') return 1;
+    return a[0].localeCompare(b[0]);
+  });
+  let header = '';
+  for (const [name, value] of ordered) {
+    const next = header ? `${header}; ${name}=${value}` : `${name}=${value}`;
+    if (next.length > CHROME_COOKIE_MAX_HEADER) break;
+    header = next;
+  }
+  return { header, count: header ? header.split('; ').length : 0 };
+}
+
+/**
+ * 从本机 Chrome 读取指定站点可用的 Cookie 头（只读）。
+ * options 可覆盖 dataDir/profile/keychainService/account/databasePath/password（测试用）。
+ * 返回 { header, count, reason }；reason 只用于提示，绝不包含 Cookie 值。
+ */
+function readChromeCookiesForHost(requestHost, options = {}) {
+  if (process.platform !== 'darwin') return { header: '', count: 0, reason: 'unsupported' };
+  const opts = { ...chromeCookieOptions(), ...options };
+  const databasePath = opts.databasePath || chromeCookieDatabasePath(opts);
+  if (!databasePath || !fs.existsSync(databasePath)) return { header: '', count: 0, reason: 'no-db' };
+  const password = opts.password || chromeSafeStoragePassword(opts);
+  if (!password) return { header: '', count: 0, reason: 'no-keychain' };
+  try {
+    const selected = selectChromeCookies(databasePath, requestHost, password);
+    if (!selected.header) return { header: '', count: 0, reason: 'no-cookie' };
+    return { header: selected.header, count: selected.count, reason: 'ok' };
+  } catch {
+    return { header: '', count: 0, reason: 'error' };
+  }
+}
+
+/** 严格 opt-in：只有 provider 配置里 autoCookie === true 才读取 Chrome。 */
+function chromeCookieImportEnabled(cfg) {
+  return process.platform === 'darwin' && Boolean(cfg) && cfg.autoCookie === true;
+}
+
+// ---------------------------------------------------------------- OpenCode 本地成本
+
+function openCodeDatabasePath() {
+  const override = String(process.env.AGENT_QUOTA_OPENCODE_DB || '').trim();
+  if (override) return path.resolve(override);
+  const dataHome = String(process.env.XDG_DATA_HOME || '').trim() || path.join(HOME, '.local', 'share');
+  return path.join(dataHome, 'opencode', 'opencode.db');
+}
+
+function openCodeTimestampScale(databasePath) {
+  let maxTime;
+  // 分开查，旧库可能只有其中一张表；表名是本文件常量，不来自外部输入。
+  for (const table of ['session_v2', 'session_message']) {
+    try {
+      const rows = runSqliteJson(databasePath, `SELECT MAX(time_created) AS t FROM ${table};`);
+      const value = numStrict(rows[0] && rows[0].t);
+      if (value !== undefined && (maxTime === undefined || value > maxTime)) maxTime = value;
+    } catch {}
+  }
+  // 当前 OpenCode 用毫秒；兼容旧库的秒级时间戳。
+  return maxTime !== undefined && maxTime > 0 && maxTime < 1e11 ? 1000 : 1;
+}
+
+function openCodeTokenSummary(row) {
+  const integer = (value) => Math.max(0, Math.trunc(Number(value) || 0));
+  return {
+    input: integer(row.input_tokens),
+    output: integer(row.output_tokens),
+    reasoning: integer(row.reasoning_tokens),
+    cacheRead: integer(row.cache_read_tokens),
+    cacheWrite: integer(row.cache_write_tokens),
+  };
+}
+
+/**
+ * 汇总时间窗内的成本/Token：
+ * 1) session_message 里的 assistant 消息（每轮真实成本，按消息时间归属）；
+ * 2) 没有消息记录（旧库/迁移后）时回退 session_v2 累计值，按 session 创建时间近似。
+ */
+function openCodeAggregate(databasePath, cutoffMs, scale) {
+  const cutoff = Math.trunc(cutoffMs / scale);
+  try {
+    const rows = runSqliteJson(
+      databasePath,
+      `
+      SELECT
+        COALESCE(SUM(CAST(json_extract(data, '$.cost') AS REAL)), 0) AS cost,
+        COALESCE(SUM(CAST(json_extract(data, '$.tokens.input') AS INTEGER)), 0) AS input_tokens,
+        COALESCE(SUM(CAST(json_extract(data, '$.tokens.output') AS INTEGER)), 0) AS output_tokens,
+        COALESCE(SUM(CAST(json_extract(data, '$.tokens.reasoning') AS INTEGER)), 0) AS reasoning_tokens,
+        COALESCE(SUM(CAST(json_extract(data, '$.tokens.cache.read') AS INTEGER)), 0) AS cache_read_tokens,
+        COALESCE(SUM(CAST(json_extract(data, '$.tokens.cache.write') AS INTEGER)), 0) AS cache_write_tokens,
+        COUNT(*) AS message_count
+      FROM session_message
+      WHERE type = 'assistant' AND time_created >= ${cutoff} AND json_valid(data);
+      `
+    );
+    const message = rows[0] || {};
+    if (Number(message.message_count) > 0) {
+      return {
+        cost: Number(message.cost) || 0,
+        tokens: openCodeTokenSummary(message),
+        source: 'session_message',
+        hasData: true,
+      };
+    }
+  } catch {}
+  try {
+    const rows = runSqliteJson(
+      databasePath,
+      `
+      SELECT
+        COALESCE(SUM(cost), 0) AS cost,
+        COALESCE(SUM(tokens_input), 0) AS input_tokens,
+        COALESCE(SUM(tokens_output), 0) AS output_tokens,
+        COALESCE(SUM(tokens_reasoning), 0) AS reasoning_tokens,
+        COALESCE(SUM(tokens_cache_read), 0) AS cache_read_tokens,
+        COALESCE(SUM(tokens_cache_write), 0) AS cache_write_tokens,
+        COUNT(*) AS row_count
+      FROM session_v2
+      WHERE time_created >= ${cutoff};
+      `
+    );
+    const session = rows[0] || {};
+    return {
+      cost: Number(session.cost) || 0,
+      tokens: openCodeTokenSummary(session),
+      source: 'session_v2',
+      hasData: Number(session.row_count) > 0,
+    };
+  } catch {}
+  return null;
+}
+
+/** 读取 today / last7Days 的本地成本；数据库不存在、不可读或无数据时返回 null（输出里省略整个字段）。 */
+function openCodeCostSummary(options = {}) {
+  const databasePath = options.databasePath || openCodeDatabasePath();
+  if (!fs.existsSync(databasePath)) return null;
+  try {
+    const scale = openCodeTimestampScale(databasePath);
+    const now = Date.now();
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const today = openCodeAggregate(databasePath, startOfToday.getTime(), scale);
+    const week = openCodeAggregate(databasePath, now - 7 * 24 * 3600 * 1000, scale);
+    // 两个窗口都没有任何记录时视为“无数据”，整个 cost 字段省略。
+    if (!(today && today.hasData) && !(week && week.hasData)) return null;
+    return {
+      currency: 'USD',
+      today: round(today ? today.cost : 0, 6),
+      last7Days: round(week ? week.cost : 0, 6),
+      tokens: {
+        today: today ? today.tokens : openCodeTokenSummary({}),
+        last7Days: week ? week.tokens : openCodeTokenSummary({}),
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------- OpenCode
@@ -1047,10 +1393,18 @@ function goWindowMeters(json) {
   return meters;
 }
 
+/** 手动 cookie 优先；缺失且 opt-in 时才读 Chrome，失败静默回退。 */
+function resolveOpenCodeCookie(cfg) {
+  const manual = cookieHeader(cfg.cookie);
+  if (manual) return { header: manual, source: 'manual' };
+  if (!chromeCookieImportEnabled(cfg)) return { header: '', source: 'none' };
+  const imported = readChromeCookiesForHost('opencode.ai');
+  return { header: imported.header, source: imported.header ? 'chrome' : 'none' };
+}
+
 function collectOpenCode(cfg) {
   const mode = String(cfg.mode || '').toLowerCase();
   const apiKey = String(cfg.apiKey || process.env.OPENCODE_GO_API_KEY || '').trim();
-  const cookie = String(cfg.cookie || '').trim();
 
   if (apiKey && mode !== 'zen') {
     const res = http('https://opencode.ai/zen/go/v1/usage', {
@@ -1078,14 +1432,22 @@ function collectOpenCode(cfg) {
     return failed('opencode', 'OpenCode', `用量接口返回 HTTP ${res.status}`);
   }
 
-  if (cookie && mode !== 'go') {
-    const headers = { Cookie: cookieHeader(cookie), Accept: 'application/json' };
+  // mode=go 只走 API Key，不读 Chrome，避免无意义地弹钥匙串授权。
+  const cookieInfo = mode === 'go' ? { header: '', source: 'none' } : resolveOpenCodeCookie(cfg);
+  if (cookieInfo.header && mode !== 'go') {
+    const headers = { Cookie: cookieInfo.header, Accept: 'application/json' };
     const orgIdCfg = String(cfg.workspaceId || '').trim();
     let orgId = orgIdCfg;
     if (!orgId) {
       const orgs = http('https://opencode.ai/console/api/orgs', { headers });
       if (orgs.status === 401 || orgs.status === 403) {
-        return failed('opencode', 'OpenCode', 'Cookie 已失效，请重新从浏览器复制');
+        return failed(
+          'opencode',
+          'OpenCode',
+          cookieInfo.source === 'chrome'
+            ? 'Chrome Cookie 已失效，请登录 opencode.ai 后刷新，或手动粘贴 Cookie'
+            : 'Cookie 已失效，请重新从浏览器复制'
+        );
       }
       const list = Array.isArray(orgs.json?.data) ? orgs.json.data : Array.isArray(orgs.json) ? orgs.json : [];
       orgId = String(list[0]?.id || list[0]?.orgId || '');
@@ -1112,7 +1474,7 @@ function collectOpenCode(cfg) {
     return provider('opencode', 'OpenCode', 'ok', metrics, {
       account: orgId,
       headline: first.kind === 'credit' ? first.headlineValue : `${Math.round(first.remainingPercent)}%`,
-      detail: 'OpenCode Console（Cookie）',
+      detail: cookieInfo.source === 'chrome' ? 'OpenCode Console（Chrome Cookie）' : 'OpenCode Console（Cookie）',
     });
   }
 
@@ -1121,6 +1483,14 @@ function collectOpenCode(cfg) {
     'OpenCode',
     '未配置：可填 OpenCode Go 的 API Key，或 console cookie + workspaceId'
   );
+}
+
+/** 给 OpenCode 结果附加本地成本（可选字段；没有可读数据时整个字段省略）。 */
+function collectOpenCodeWithCost(cfg) {
+  const result = collectOpenCode(cfg);
+  if (!result || (cfg && cfg.costEnabled === false)) return result;
+  const cost = openCodeCostSummary();
+  return cost ? { ...result, cost } : result;
 }
 
 
@@ -1352,7 +1722,7 @@ function runCheckin(only, options = {}) {
 const COLLECTORS = {
   codex: collectCodex,
   deepseek: collectDeepSeek,
-  opencode: collectOpenCode,
+  opencode: collectOpenCodeWithCost,
   trae: collectTrae,
   workbuddy: collectWorkBuddy,
 };
@@ -1415,5 +1785,8 @@ module.exports = {
   writeCheckinConfig,
   deepseekResult,
   goWindowMeters,
+  decryptChromeCookieValue,
+  readChromeCookiesForHost,
+  openCodeCostSummary,
   CURL_ARGS,
 };

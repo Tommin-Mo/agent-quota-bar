@@ -28,6 +28,11 @@ final class QuotaPopoverViewController: NSViewController {
     private let headerActions = NSStackView()
     private let themeButton = HeaderIconButton(symbol: "moon")
     private let checkinButton = HeaderIconButton(symbol: "checkmark.circle")
+    private let insightStack = NSStackView()
+    private let costLabel = NSTextField(labelWithString: "")
+    private let historyRow = NSStackView()
+    private let historyCaptionLabel = NSTextField(labelWithString: "近 7 天")
+    private let sparkline = HistorySparklineView()
     private var checkinDone = false
     private var checkinDetailText = ""
     private var checkinRunning = false
@@ -38,6 +43,34 @@ final class QuotaPopoverViewController: NSViewController {
     private var lastReportedPreferredSize: NSSize = .zero
     private let spinner = NSProgressIndicator()
     private var draggingRow: ProviderRowView?
+
+    // MARK: - 可选数据钩子（优先用注入值；缺省时读 CostStore/HistoryStore）
+    /// 成本汇总行，例如 "今日 $0.42 · 近 7 天 $2.10"；返回 nil/空串则隐藏。
+    var costTextProvider: (() -> String?)? {
+        didSet { refreshInsights() }
+    }
+    /// 近 7 天历史值（从旧到新）；nil 表示当天无数据。
+    var historyProvider: (() -> [Double?])? {
+        didSet { refreshInsights() }
+    }
+    /// 历史小图的标题，默认「近 7 天」。
+    var historyCaption: String = "近 7 天" {
+        didSet { refreshInsights() }
+    }
+    /// 单个服务卡片的成本行（如 OpenCode）：由 AppDelegate/CostStore 读取
+    /// `ProviderStatus` 的可选嵌套 `cost` 后返回文本；nil 表示该卡片不显示成本行。
+    var providerCostTextProvider: ((ProviderStatus) -> String?)? {
+        didSet {
+            if let snapshot = lastSnapshot {
+                update(
+                    snapshot: snapshot,
+                    error: lastError,
+                    isRefreshing: lastRefreshing,
+                    isOffline: lastOffline
+                )
+            }
+        }
+    }
 
     /// NSPopover 不会持续跟随 preferredContentSize；AppDelegate 可消费此回调/通知，
     /// 在面板已展开且内容高度变化时同步 popover.contentSize。
@@ -117,6 +150,50 @@ final class QuotaPopoverViewController: NSViewController {
         header.spacing = 8
         header.translatesAutoresizingMaskIntoConstraints = false
 
+        // 成本行 + 近 7 天小图：有数据才出现，空状态不占高度。
+        costLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        costLabel.textColor = Theme.secondary
+        costLabel.lineBreakMode = .byTruncatingTail
+        costLabel.isHidden = true
+        costLabel.setAccessibilityLabel("成本汇总")
+
+        historyCaptionLabel.font = .systemFont(ofSize: 10)
+        historyCaptionLabel.textColor = Theme.tertiary
+        historyCaptionLabel.setAccessibilityLabel("历史区间")
+        historyCaptionLabel.stringValue = historyCaption
+
+        sparkline.translatesAutoresizingMaskIntoConstraints = false
+        sparkline.setAccessibilityElement(true)
+        sparkline.setAccessibilityRole(.image)
+        sparkline.setAccessibilityLabel("近 7 天历史")
+        sparkline.widthAnchor.constraint(equalToConstant: 132).isActive = true
+        sparkline.heightAnchor.constraint(equalToConstant: 26).isActive = true
+
+        let historySpacer = NSView()
+        historySpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        historyRow.orientation = .horizontal
+        historyRow.alignment = .centerY
+        historyRow.spacing = 8
+        historyRow.detachesHiddenViews = true
+        historyRow.addArrangedSubview(historyCaptionLabel)
+        historyRow.addArrangedSubview(historySpacer)
+        historyRow.addArrangedSubview(sparkline)
+        historyRow.translatesAutoresizingMaskIntoConstraints = false
+        historyRow.isHidden = true
+
+        insightStack.orientation = .vertical
+        insightStack.alignment = .leading
+        insightStack.spacing = 4
+        insightStack.detachesHiddenViews = true
+        insightStack.setContentHuggingPriority(.required, for: .vertical)
+        insightStack.setContentCompressionResistancePriority(.required, for: .vertical)
+        insightStack.translatesAutoresizingMaskIntoConstraints = false
+        insightStack.addArrangedSubview(costLabel)
+        insightStack.addArrangedSubview(historyRow)
+        costLabel.widthAnchor.constraint(equalTo: insightStack.widthAnchor).isActive = true
+        historyRow.widthAnchor.constraint(equalTo: insightStack.widthAnchor).isActive = true
+
         rowsStack.orientation = .vertical
         rowsStack.alignment = .leading
         rowsStack.spacing = 0
@@ -142,6 +219,7 @@ final class QuotaPopoverViewController: NSViewController {
         footer.translatesAutoresizingMaskIntoConstraints = false
 
         root.addSubview(header)
+        root.addSubview(insightStack)
         root.addSubview(rowsStack)
         root.addSubview(footer)
 
@@ -150,7 +228,11 @@ final class QuotaPopoverViewController: NSViewController {
             header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             header.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
 
-            rowsStack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
+            insightStack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
+            insightStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
+            insightStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+
+            rowsStack.topAnchor.constraint(equalTo: insightStack.bottomAnchor, constant: 6),
             rowsStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             rowsStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
 
@@ -201,9 +283,67 @@ final class QuotaPopoverViewController: NSViewController {
         titleLabel.textColor = .labelColor.resolvedForAppearance()
         subtitleLabel.textColor = Theme.tertiary.resolvedForAppearance()
         footerLabel.textColor = Theme.tertiary.resolvedForAppearance()
+        costLabel.textColor = Theme.secondary.resolvedForAppearance()
+        historyCaptionLabel.textColor = Theme.tertiary.resolvedForAppearance()
+        sparkline.needsDisplay = true
         let dark = Theme.currentAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         themeButton.symbolName = dark ? "sun.max" : "moon"
         view.needsDisplay = true
+    }
+
+    // MARK: - 成本 / 历史
+
+    /// 后端成本/历史数据更新后调用；会同步内容与 popover 高度。
+    func refreshInsights() {
+        updateInsightContent()
+        updatePreferredSize()
+    }
+
+    private func updateInsightContent() {
+        guard isViewLoaded else { return }
+        let cost = costTextProvider?()?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasCost = !(cost?.isEmpty ?? true)
+        costLabel.stringValue = hasCost ? cost! : ""
+        costLabel.isHidden = !hasCost
+        costLabel.setAccessibilityValue(hasCost ? cost! : "无数据")
+
+        let resolved = resolvedHistory()
+        let hasHistory = resolved.values.contains { $0 != nil }
+        sparkline.values = resolved.values
+        historyCaptionLabel.stringValue = resolved.caption
+        historyRow.isHidden = !hasHistory
+    }
+
+    /// 优先用外部注入的历史；未注入时先用 HistoryStore 的额度历史，再退回
+    /// CostStore 的 OpenCode 7 天成本（都有本地缓存，缺失则隐藏）。
+    private func resolvedHistory() -> (values: [Double?], caption: String) {
+        if let historyProvider {
+            return (historyProvider(), historyCaption)
+        }
+        if let snapshot = lastSnapshot {
+            let target = snapshot.worstProviderID() ?? snapshot.providers.first?.id
+            if let target {
+                let values = HistoryStore.shared.remainingValues(provider: target)
+                if values.contains(where: { $0 != nil }) {
+                    let name = ProviderStyles.style(for: target).shortName
+                    return (values, "\(name) · 近 7 天剩余")
+                }
+            }
+        }
+        let days = CostStore.shared.daily()
+        let hasData = days.contains { $0.cost > 0 || $0.tokens.total > 0 || $0.sessions > 0 }
+        guard hasData else { return ([], historyCaption) }
+        return (days.map { Optional($0.cost) }, "OpenCode · 近 7 天成本")
+    }
+
+    /// 单个服务卡片的成本行：优先外部注入，否则 OpenCode 直接读 CostStore
+    /// （嵌套 `ProviderStatus.cost` 优先，缺失时回退本地库）。
+    private func resolvedCostText(for provider: ProviderStatus) -> String? {
+        if let providerCostTextProvider {
+            return providerCostTextProvider(provider)
+        }
+        guard provider.cost != nil || provider.id == CostStore.openCodeProviderID else { return nil }
+        return CostStore.shared.summaryText(for: provider, config: service.config)
     }
 
     func updateCheckin(status: String, detail: String, done: Bool, running: Bool) {
@@ -236,6 +376,7 @@ final class QuotaPopoverViewController: NSViewController {
         lastError = error
         lastRefreshing = isRefreshing
         lastOffline = isOffline
+        updateInsightContent()
         rowsStack.arrangedSubviews.forEach {
             rowsStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
@@ -273,6 +414,7 @@ final class QuotaPopoverViewController: NSViewController {
                 todaySpent: UsageTracker.shared.todaySpent(for: provider.id),
                 checkinDone: checkinDone,
                 checkinStreak: service.config.int("checkin.workbuddyStreak", default: 0),
+                costText: resolvedCostText(for: provider),
                 onConfigure: { [weak self] in
                     self?.onConfigure?(provider.id)
                 },
@@ -336,8 +478,16 @@ final class QuotaPopoverViewController: NSViewController {
     private func updatePreferredSize() {
         view.layoutSubtreeIfNeeded()
         let rowsHeight = rowsStack.fittingSize.height
+        var insightsHeight: CGFloat = 0
+        if !costLabel.isHidden {
+            insightsHeight += costLabel.fittingSize.height
+        }
+        if !historyRow.isHidden {
+            if insightsHeight > 0 { insightsHeight += insightStack.spacing }
+            insightsHeight += historyRow.fittingSize.height
+        }
         // 顶部 14 + header 约 31 + 间距 12 + rows + 间距 8 + footer 约 16 + 底部 10
-        let height = min(840, max(160, rowsHeight + 92))
+        let height = min(840, max(160, rowsHeight + 92 + insightsHeight))
         let size = NSSize(width: 380, height: height)
         preferredContentSize = size
         view.invalidateIntrinsicContentSize()
@@ -460,6 +610,7 @@ final class ProviderRowView: NSView {
     private let todaySpent: Double?
     private let checkinDone: Bool
     private let checkinStreak: Int
+    private let costText: String?
     private let onConfigure: () -> Void
     private let onCheckin: () -> Void
     private var hovered = false
@@ -476,6 +627,7 @@ final class ProviderRowView: NSView {
         todaySpent: Double?,
         checkinDone: Bool,
         checkinStreak: Int,
+        costText: String? = nil,
         onConfigure: @escaping () -> Void,
         onCheckin: @escaping () -> Void
     ) {
@@ -484,6 +636,7 @@ final class ProviderRowView: NSView {
         self.todaySpent = todaySpent
         self.checkinDone = checkinDone
         self.checkinStreak = checkinStreak
+        self.costText = costText
         self.onConfigure = onConfigure
         self.onCheckin = onCheckin
         super.init(frame: .zero)
@@ -585,9 +738,20 @@ final class ProviderRowView: NSView {
         header.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         header.heightAnchor.constraint(equalToConstant: 46).isActive = true
 
+        // 可选成本行（如 OpenCode）；数据来自 ProviderStatus 的嵌套 cost，缺省不占位。
+        let hasCostLine = !(costText?.isEmpty ?? true)
+        if let costText, hasCostLine {
+            let cost = label(costText, size: 10, color: Theme.tertiary)
+            cost.lineBreakMode = .byTruncatingTail
+            cost.setAccessibilityLabel("成本")
+            stack.addArrangedSubview(cost)
+            cost.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
         // 余额/积分卡没有窗口指标，统一成固定 66pt 行高：10 + 46 + 10，
-        // 避免左右内容把行撑出上下不对称的空白。
-        if !provider.metrics.contains(where: { $0.kind == "percent" }),
+        // 避免左右内容把行撑出上下不对称的空白。有成本行时改为自动高度。
+        if !hasCostLine,
+           !provider.metrics.contains(where: { $0.kind == "percent" }),
            provider.status != "error",
            provider.status != "unconfigured" {
             heightAnchor.constraint(equalToConstant: 66).isActive = true
@@ -964,5 +1128,66 @@ final class LogoBadgeView: NSView {
 
     private func updateInk() {
         imageView.contentTintColor = NSColor.labelColor.resolvedForAppearance()
+    }
+}
+
+// MARK: - 近 7 天历史小图
+
+/// 7 天消耗柱状小图。只负责绘制，数据由 `historyProvider` 注入；
+/// 缺失值画成小点，避免误显示为 0。
+final class HistorySparklineView: NSView {
+    var values: [Double?] = [] {
+        didSet {
+            needsDisplay = true
+            updateAccessibilityValue()
+        }
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 132, height: 26) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        Theme.separator.withAlphaComponent(0.10).setFill()
+        track.fill()
+
+        let count = max(values.count, 1)
+        guard !values.isEmpty else { return }
+        let maxValue = values.compactMap({ $0 }).max() ?? 0
+        let gap: CGFloat = 2
+        let cellWidth = max(1, (bounds.width - 2 - gap * CGFloat(count - 1)) / CGFloat(count))
+        let baseline: CGFloat = 3
+        let available = max(2, bounds.height - baseline * 2)
+
+        for (index, value) in values.enumerated() {
+            let x = 1 + CGFloat(index) * (cellWidth + gap)
+            guard let value, maxValue > 0, value > 0 else {
+                // 缺失值：居中一个小点，和“消耗为 0”区分开。
+                Theme.tertiary.withAlphaComponent(0.35).setFill()
+                NSBezierPath(ovalIn: NSRect(x: x + cellWidth / 2 - 1, y: bounds.midY - 1, width: 2, height: 2)).fill()
+                continue
+            }
+            let fraction = CGFloat(max(0, min(1, value / maxValue)))
+            let barHeight = max(2, available * fraction)
+            let bar = NSRect(x: x, y: baseline, width: cellWidth, height: barHeight)
+            // 最后一天（今天）更醒目。
+            let alpha: CGFloat = index == values.count - 1 ? 0.95 : 0.55
+            Theme.accent.withAlphaComponent(alpha).setFill()
+            NSBezierPath(
+                roundedRect: bar,
+                xRadius: min(2, cellWidth / 2),
+                yRadius: min(2, cellWidth / 2)
+            ).fill()
+        }
+    }
+
+    private func updateAccessibilityValue() {
+        guard !values.isEmpty else {
+            setAccessibilityValue("无数据")
+            return
+        }
+        let text = values.map { value in
+            value.map { String(format: "%.2f", $0) } ?? "无数据"
+        }.joined(separator: "，")
+        setAccessibilityValue(text)
     }
 }

@@ -246,6 +246,26 @@ final class SettingsWindowController: NSWindowController {
     private var providerStatusViews: [String: (dot: ThemedSurfaceView, text: NSTextField)] = [:]
     private var visibilitySwitches: [String: AccentSwitch] = [:]
     private var checkinDetailStatusLabels: [String: NSTextField] = [:]
+    private var accountPopups: [String: NSPopUpButton] = [:]
+
+    // MARK: - 可选 UI 数据钩子（AccountStore / 合并图标后端未落地时保持隐藏）
+    /// providerID -> 账户列表；为空/只有一个账户时该行不显示选择器。
+    /// 使用 Models.ProviderAccount，避免假设后端把账户拍平成字符串。
+    var accountsProvider: ((String) -> [ProviderAccount])? {
+        didSet { reloadAccounts() }
+    }
+    /// providerID -> 当前账户 id（ProviderAccount.id）。
+    var activeAccountProvider: ((String) -> String?)? {
+        didSet { reloadAccounts() }
+    }
+    /// 用户在选择器里切换账户：(providerID, accountID)；由后端/AppDelegate 负责持久化。
+    var onSelectAccount: ((String, String) -> Void)?
+    /// 未注入钩子时直接使用 AccountStore；有钩子时以钩子为准。
+    private lazy var accountStore = AccountStore(config: service.config)
+    /// AppDelegate + MenuBarIcon 支持 `menuBarMode == "merged"` 后再置为 true。
+    var mergedMenuBarModeAvailable = false {
+        didSet { populateMenuBarModePopup() }
+    }
 
     private let providerOrder = ["codex", "deepseek", "opencode", "trae", "workbuddy"]
     private let refreshOptions: [(String, Int)] = [("1 分钟", 60), ("5 分钟", 300), ("15 分钟", 900), ("30 分钟", 1800)]
@@ -282,6 +302,7 @@ final class SettingsWindowController: NSWindowController {
         selectPage(selectedPage)
         loadValues()
         updateProviderStatuses(service.snapshot)
+        reloadAccounts()
         NotificationCenter.default.addObserver(
             self, selector: #selector(quotaUpdated(_:)), name: .quotaUpdated, object: nil
         )
@@ -794,12 +815,26 @@ final class SettingsWindowController: NSWindowController {
         return row
     }
 
-    private func makeMenuBarPage() -> NSView {
+    /// 合并图标需要 AppDelegate 真正渲染 "merged" 才暴露，避免给用户一个无效选项。
+    private func populateMenuBarModePopup() {
+        let current = menuBarModePopup.selectedItem?.representedObject as? String
+            ?? service.config.string("menuBarMode", default: "auto")
         menuBarModePopup.removeAllItems()
         menuBarModePopup.addItem(withTitle: "自动切换（谁变化显示谁）")
         menuBarModePopup.lastItem?.representedObject = "auto"
         menuBarModePopup.addItem(withTitle: "固定一家")
         menuBarModePopup.lastItem?.representedObject = "fixed"
+        if mergedMenuBarModeAvailable || current == "merged" {
+            menuBarModePopup.addItem(withTitle: "合并显示（所有服务）")
+            menuBarModePopup.lastItem?.representedObject = "merged"
+        }
+        if let index = menuBarModePopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == current }) {
+            menuBarModePopup.selectItem(at: index)
+        }
+    }
+
+    private func makeMenuBarPage() -> NSView {
+        populateMenuBarModePopup()
         menuBarModePopup.font = .systemFont(ofSize: 12)
         menuBarModePopup.target = self
         menuBarModePopup.action = #selector(menuBarModeChanged)
@@ -1317,18 +1352,78 @@ final class SettingsWindowController: NSWindowController {
         visibility.setAccessibilityLabel("\(style.shortName) 在面板和菜单栏显示")
         visibilitySwitches[id] = visibility
 
+        // 账户选择器：默认隐藏，reloadAccounts() 在后端返回多账户时显示。
+        let account = NSPopUpButton()
+        account.font = .systemFont(ofSize: 11)
+        account.controlSize = .small
+        account.target = self
+        account.action = #selector(accountChanged(_:))
+        account.identifier = NSUserInterfaceItemIdentifier(id)
+        account.setAccessibilityLabel("\(style.shortName) 账户")
+        account.translatesAutoresizingMaskIntoConstraints = false
+        account.widthAnchor.constraint(equalToConstant: 112).isActive = true
+        account.isHidden = true
+        accountPopups[id] = account
+
         let configure = ClosureButton(title: "配置…") { [weak self] in
             self?.onOpenSetup(id)
         }
         configure.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let row = NSStackView(views: [avatar, info, spacer, visibility, configure])
+        let row = NSStackView(views: [avatar, info, spacer, account, visibility, configure])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 11
         row.edgeInsets = NSEdgeInsets(top: 10, left: 0, bottom: 10, right: 0)
         providerStatusViews[id] = (dot, status)
         return row
+    }
+
+    // MARK: - 多账户
+
+    /// 后端账户数据变化后调用；只有多于一个账户时才显示选择器，避免无意义控件。
+    func reloadAccounts() {
+        guard isWindowLoaded, !accountPopups.isEmpty else { return }
+        for (id, popup) in accountPopups {
+            let accounts = accountsProvider?(id) ?? accountStore.accounts(for: id)
+            popup.removeAllItems()
+            for account in accounts {
+                let title = account.label.isEmpty ? (account.account ?? account.id) : account.label
+                popup.addItem(withTitle: title)
+                popup.lastItem?.representedObject = account.id
+            }
+            let active = activeAccountProvider?(id) ?? accountStore.activeAccountID(for: id)
+            if let active,
+               let index = accounts.firstIndex(where: { $0.id == active }) {
+                popup.selectItem(at: index)
+            }
+            let showsPicker = accounts.count > 1
+            popup.isHidden = !showsPicker
+            popup.toolTip = showsPicker
+                ? "切换 \(ProviderStyles.style(for: id).shortName) 账户"
+                : nil
+        }
+    }
+
+    @objc private func accountChanged(_ sender: NSPopUpButton) {
+        guard let id = sender.identifier?.rawValue,
+              let accountID = sender.selectedItem?.representedObject as? String else { return }
+        let accountLabel = sender.selectedItem?.title ?? accountID
+        if let onSelectAccount {
+            onSelectAccount(id, accountID)
+        } else {
+            do {
+                // activate 会把选中账号的凭据镜像回扁平字段，兼容现有 collector。
+                _ = try accountStore.activate(accountID, for: id)
+                service.refresh()
+            } catch {
+                hintLabel.stringValue = "切换失败：\(error.localizedDescription)"
+                hintLabel.textColor = .systemRed
+                return
+            }
+        }
+        hintLabel.stringValue = "已切换 \(ProviderStyles.style(for: id).shortName) 账户：\(accountLabel)"
+        hintLabel.textColor = Theme.secondary
     }
 
     // MARK: - 导航

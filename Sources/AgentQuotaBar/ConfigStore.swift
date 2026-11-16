@@ -22,7 +22,14 @@ final class ConfigStore {
             "dangerColor": "#DC2626",
             "thresholds": ["trae": 200, "workbuddy": 500, "deepseek": 5],
         ],
-        "notifications": ["enabled": false, "percent": 20],
+        "notifications": [
+            "enabled": false,
+            "percent": 20,
+            // 订阅到期前 N 天提醒；数据超过 N 小时未更新提醒；凭据超过 N 天未更新时附加提示。
+            "subscriptionDays": 3,
+            "staleHours": 12,
+            "credentialDays": 60,
+        ],
         "checkin": [
             "auto": true,
             "hour": 9,
@@ -33,12 +40,22 @@ final class ConfigStore {
         ],
         "proxy": "auto",
         "proxyHosts": ["chatgpt.com", "auth.openai.com"],
+        // Chrome Cookie 自动导入默认关闭；不填 dataDir 时由 collector 自动探测。
+        "chromeCookies": [
+            "profile": "Default",
+            "dataDir": "",
+            "keychainService": "",
+            "keychainAccount": "",
+        ],
         "providers": [
             "codex": ["enabled": true],
             "deepseek": ["enabled": true, "apiKey": ""],
-            "opencode": ["enabled": true, "apiKey": "", "cookie": "", "workspaceId": ""],
+            "opencode": [
+                "enabled": true, "apiKey": "", "cookie": "", "workspaceId": "",
+                "autoCookie": false, "costEnabled": true,
+            ],
             "trae": ["enabled": true, "edition": "cn"],
-            "workbuddy": ["enabled": true, "token": "", "uid": ""],
+            "workbuddy": ["enabled": true, "token": "", "uid": "", "autoCookie": false],
         ],
     ]
 
@@ -208,6 +225,19 @@ final class ConfigStore {
 
     func stringArray(_ path: String) -> [String] {
         (read(path) as? [String]) ?? []
+    }
+
+    /// 读取任意 JSON 对象，供 AccountStore / HistoryStore 等结构化字段使用。
+    func object(_ path: String) -> Any? {
+        read(path)
+    }
+
+    func dictionary(_ path: String) -> [String: Any]? {
+        read(path) as? [String: Any]
+    }
+
+    func dictionaries(_ path: String) -> [[String: Any]] {
+        (read(path) as? [[String: Any]]) ?? []
     }
 
     func bool(_ path: String, default fallback: Bool) -> Bool {
