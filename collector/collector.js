@@ -1273,13 +1273,19 @@ function chromeSafeStoragePassword(options) {
   if (_chromeSafeStoragePassword) return _chromeSafeStoragePassword;
   if (process.platform !== 'darwin') return null;
   try {
-    const result = spawnSync(
-      '/usr/bin/security',
-      ['find-generic-password', '-w', '-s', options.keychainService, '-a', options.keychainAccount],
-      { encoding: 'utf8', timeout: 6000, stdio: ['ignore', 'pipe', 'ignore'] }
-    );
+    // App 内的签名 helper 优先；授权归到 AgentQuotaBar，而不是 /usr/bin/security。
+    const helper = path.join(__dirname, 'ChromeSafeStorage');
+    const command = fs.existsSync(helper) ? helper : '/usr/bin/security';
+    const args = fs.existsSync(helper)
+      ? [options.keychainService, options.keychainAccount]
+      : ['find-generic-password', '-w', '-s', options.keychainService, '-a', options.keychainAccount];
+    const result = spawnSync(command, args, {
+      encoding: 'utf8',
+      timeout: 6000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
     if (result.status !== 0) return null;
-    // 只去掉 security 追加的换行；口令本身可能含空格，不能 trim。
+    // helper 输出原始口令；security 会追加换行。口令本身可能含空格，不能 trim。
     const password = String(result.stdout || '').replace(/\r?\n$/, '');
     if (!password) return null;
     _chromeSafeStoragePassword = password;

@@ -239,7 +239,7 @@ final class SettingsWindowController: NSWindowController {
     private var colorWells: [NSColorWell] = []
     private weak var scrollView: NSScrollView?
 
-    private let contentStack = NSStackView()
+    private let contentStack = FlippedStackView()
     private var pageViews: [NSView] = []
     private var navButtons: [SidebarButton] = []
     private var selectedPage = 0
@@ -1379,6 +1379,8 @@ final class SettingsWindowController: NSWindowController {
         autoCookieLabel.toolTip = "仅在没有可用登录态或登录态失效时回退到 Chrome Cookie"
         autoCookieLabel.setContentHuggingPriority(.required, for: .horizontal)
         autoCookieLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        autoCookieLabel.translatesAutoresizingMaskIntoConstraints = false
+        autoCookieLabel.widthAnchor.constraint(equalToConstant: 24).isActive = true
 
         let configure = ClosureButton(title: "配置…") { [weak self] in
             self?.onOpenSetup(id)
@@ -1394,7 +1396,7 @@ final class SettingsWindowController: NSWindowController {
         manageAccounts.setAccessibilityLabel("管理 \(style.shortName) 账户")
         manageAccounts.toolTip = "添加、编辑、删除或切换账户"
 
-        let row = NSStackView(views: [avatar, info, spacer, autoCookie, account, visibility, manageAccounts, configure])
+        let row = NSStackView(views: [avatar, info, spacer, autoCookieLabel, autoCookie, account, visibility, manageAccounts, configure])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 11
@@ -1465,6 +1467,22 @@ final class SettingsWindowController: NSWindowController {
         }
         hintLabel.stringValue = "已切换 \(ProviderStyles.style(for: id).shortName) 账户：\(accountLabel)"
         hintLabel.textColor = Theme.secondary
+    }
+
+    /// 仅供截图/回归：打开某家的账户管理 sheet。
+    func openAccountManagerForDebug(_ provider: String) {
+        guard let window, accountManager == nil else { return }
+        let manager = AccountManagerWindowController(provider: provider, store: accountStore) { [weak self] in
+            guard let self else { return }
+            self.reloadAccounts()
+            self.service.refresh()
+        }
+        guard let sheet = manager.window else { return }
+        accountManager = manager
+        window.beginSheet(sheet) { [weak self] _ in
+            self?.accountManager = nil
+            self?.reloadAccounts()
+        }
     }
 
     @objc private func manageAccountsTapped(_ sender: NSButton) {
@@ -1782,7 +1800,7 @@ final class AccountManagerWindowController: NSWindowController {
 
     private let container = ThemedSurfaceView()
     private let scrollView = NSScrollView()
-    private let contentStack = NSStackView()
+    private let contentStack = FlippedStackView()
     private let listStack = NSStackView()
     private let formContainer = ThemedSurfaceView()
     private let formStack = NSStackView()
@@ -1803,7 +1821,7 @@ final class AccountManagerWindowController: NSWindowController {
         self.onChanged = onChanged
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 340),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -1823,7 +1841,7 @@ final class AccountManagerWindowController: NSWindowController {
 
     private func buildContent() {
         guard let window else { return }
-        container.frame = NSRect(x: 0, y: 0, width: 600, height: 560)
+        container.frame = NSRect(x: 0, y: 0, width: 600, height: 340)
         container.wantsLayer = true
         container.surfaceColor = Theme.background
         window.contentView = container
@@ -1843,22 +1861,14 @@ final class AccountManagerWindowController: NSWindowController {
         header.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(header)
 
-        scrollView.hasVerticalScroller = true
-        scrollView.drawsBackground = false
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(scrollView)
-
-        let document = FlippedView()
-        document.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.documentView = document
-
+        // 账户列表直接放在容器里，不再用 scrollView 包一层：
+        // NSStackView 在 flipped document 中容易把首行顶到底部，造成大片空白。
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
         contentStack.spacing = 10
         contentStack.detachesHiddenViews = true
-        contentStack.setContentHuggingPriority(.required, for: .vertical)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
-        document.addSubview(contentStack)
+        container.addSubview(contentStack)
 
         listStack.orientation = .vertical
         listStack.alignment = .leading
@@ -1878,25 +1888,11 @@ final class AccountManagerWindowController: NSWindowController {
             header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             header.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
 
-            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
-            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-
-            document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
-            document.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
-            document.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.heightAnchor),
-
-            contentStack.topAnchor.constraint(equalTo: document.topAnchor, constant: 4),
-            contentStack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 2),
-            contentStack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -2),
-            contentStack.bottomAnchor.constraint(lessThanOrEqualTo: document.bottomAnchor, constant: -4),
+            contentStack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14),
+            contentStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            contentStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            contentStack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -64),
         ])
-        let fit = document.heightAnchor.constraint(
-            equalTo: contentStack.heightAnchor,
-            constant: 12
-        )
-        fit.priority = .defaultHigh
-        fit.isActive = true
 
         let add = NSButton(title: "添加账户", target: self, action: #selector(addTapped))
         add.bezelStyle = .rounded
@@ -1929,7 +1925,6 @@ final class AccountManagerWindowController: NSWindowController {
             footer.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
             footer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
             footer.heightAnchor.constraint(equalToConstant: 28),
-            scrollView.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
         ])
     }
 
@@ -2037,13 +2032,19 @@ final class AccountManagerWindowController: NSWindowController {
             empty.maximumNumberOfLines = 0
             listStack.addArrangedSubview(empty)
             empty.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
-            return
+                return
         }
         for account in accounts {
             let card = accountCard(account, activeID: activeID)
             listStack.addArrangedSubview(card)
             card.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
         }
+    }
+
+    private func scrollToTop() {
+        guard let document = scrollView.documentView else { return }
+        document.layoutSubtreeIfNeeded()
+
     }
 
     private func accountCard(_ account: ProviderAccount, activeID: String?) -> NSView {
@@ -2122,8 +2123,20 @@ final class AccountManagerWindowController: NSWindowController {
         statusLabel.stringValue = ""
         formContainer.isHidden = false
         contentStack.layoutSubtreeIfNeeded()
+        resizeSheet(expanded: true)
         window?.makeFirstResponder(labelField)
-        scrollToBottom()
+    }
+
+    private func resizeSheet(expanded: Bool) {
+        guard let window else { return }
+        let height: CGFloat = expanded ? 720 : 340
+        var frame = window.frame
+        let delta = height - frame.height
+        frame.size.height = height
+        frame.origin.y -= delta
+        window.setFrame(frame, display: true, animate: true)
+        container.setFrameSize(NSSize(width: 600, height: height))
+        contentStack.layoutSubtreeIfNeeded()
     }
 
     private func cancelForm() {
@@ -2131,6 +2144,7 @@ final class AccountManagerWindowController: NSWindowController {
         formContainer.isHidden = true
         statusLabel.stringValue = ""
         footerStatusLabel.stringValue = ""
+        resizeSheet(expanded: false)
     }
 
     @objc private func addTapped() {
@@ -2176,6 +2190,7 @@ final class AccountManagerWindowController: NSWindowController {
             }
             editingAccount = nil
             formContainer.isHidden = true
+            resizeSheet(expanded: false)
             statusLabel.stringValue = "已保存"
             statusLabel.textColor = Theme.success
             reload()
@@ -2277,6 +2292,10 @@ final class AccountManagerWindowController: NSWindowController {
 }
 
 private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+private final class FlippedStackView: NSStackView {
     override var isFlipped: Bool { true }
 }
 

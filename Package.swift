@@ -8,6 +8,10 @@ let package = Package(
         .executableTarget(
             name: "AgentQuotaBar",
             path: "Sources/AgentQuotaBar"
+        ),
+        .executableTarget(
+            name: "ChromeSafeStorage",
+            path: "Sources/ChromeSafeStorage"
         )
     ]
 )

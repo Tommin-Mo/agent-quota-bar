@@ -24,7 +24,9 @@ echo "==> swift build -c release"
 swift build -c release --package-path "$ROOT"
 
 BIN="$ROOT/.build/release/AgentQuotaBar"
+HELPER="$ROOT/.build/release/ChromeSafeStorage"
 [ -x "$BIN" ] || fail "release binary not found: $BIN"
+[ -x "$HELPER" ] || fail "keychain helper not found: $HELPER"
 
 # 先装到同卷临时目录，全部校验通过后再替换 dist，避免留下半成品。
 STAGE_ROOT="$DIST/.staging.$$"
@@ -38,6 +40,8 @@ mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 
 cp "$BIN" "$STAGE/Contents/MacOS/AgentQuotaBar"
 chmod +x "$STAGE/Contents/MacOS/AgentQuotaBar"
+cp "$HELPER" "$STAGE/Contents/Resources/ChromeSafeStorage"
+chmod +x "$STAGE/Contents/Resources/ChromeSafeStorage"
 
 # collector 运行时用 __dirname 找 workbuddy-key，必须整个目录进 Resources
 cp "$ROOT/collector/collector.js" "$ROOT/collector/trae-crypto.js" "$STAGE/Contents/Resources/"
@@ -97,6 +101,7 @@ plutil -lint "$STAGE/Contents/Info.plist" >/dev/null \
 # 只有 App 主可执行文件是 Mach-O，Resources 里是 JS/脚本/图片，不需要 --deep。
 # 签名失败必须让构建失败，不能 `|| true` 吞掉。
 echo "==> codesign (ad-hoc)"
+codesign --force --sign - "$STAGE/Contents/Resources/ChromeSafeStorage"
 codesign --force --sign - "$STAGE"
 codesign --verify --strict --verbose=2 "$STAGE" \
   || fail "codesign verification failed after signing"

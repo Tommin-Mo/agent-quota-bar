@@ -264,9 +264,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 if let page = env["AQB_SETTINGS_PAGE"] {
                     self?.settingsController?.selectPageForDebug(page)
                 }
+                if let provider = env["AQB_ACCOUNT_MANAGER"] {
+                    self?.settingsController?.openAccountManagerForDebug(provider)
+                }
                 if let path = env["AQB_SETTINGS_SNAPSHOT"] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
                         guard let view = self?.settingsController?.window?.contentView else { return }
+                        self?.writeSnapshot(of: view, to: path)
+                    }
+                }
+                if let path = env["AQB_SHEET_SNAPSHOT"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                        guard let view = self?.settingsController?.window?.attachedSheet?.contentView else { return }
                         self?.writeSnapshot(of: view, to: path)
                     }
                 }
@@ -279,6 +288,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 if let path = env["AQB_SETUP_SNAPSHOT"] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         guard let view = self?.setupControllers[provider]?.window?.contentView else { return }
+                        self?.writeSnapshot(of: view, to: path)
+                    }
+                }
+                if let path = env["AQB_SHEET_SNAPSHOT"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                        guard let view = self?.settingsController?.window?.attachedSheet?.contentView else { return }
                         self?.writeSnapshot(of: view, to: path)
                     }
                 }
@@ -303,6 +318,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 if let path = env["AQB_TOGGLE_SNAPSHOT"] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                         guard let view = self?.popoverController.view else { return }
+                        self?.writeSnapshot(of: view, to: path)
+                    }
+                }
+                if let path = env["AQB_SHEET_SNAPSHOT"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                        guard let view = self?.settingsController?.window?.attachedSheet?.contentView else { return }
                         self?.writeSnapshot(of: view, to: path)
                     }
                 }
