@@ -446,6 +446,9 @@ final class QuotaPopoverViewController: NSViewController {
                 },
                 onCheckin: { [weak self] in
                     self?.onCheckin?()
+                },
+                onStatus: { [weak self] in
+                    self?.openServiceStatus(provider.id)
                 }
             )
             row.showsSeparator = index < ordered.count - 1
@@ -478,6 +481,17 @@ final class QuotaPopoverViewController: NSViewController {
         if provider.metrics.contains(where: { $0.kind == "percent" }) { return "订阅额度" }
         if provider.id == "deepseek" { return "现金余额" }
         return "积分"
+    }
+
+    private func openServiceStatus(_ providerID: String) {
+        let URLs = [
+            "codex": "https://status.openai.com",
+            "opencode": "https://status.opencode.ai",
+            "deepseek": "https://status.deepseek.com",
+        ]
+        if let raw = URLs[providerID], let url = URL(string: raw) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func orderedProviders(_ snapshot: QuotaSnapshot) -> [ProviderStatus] {
@@ -647,6 +661,7 @@ final class ProviderRowView: NSView {
     private let showsCategory: Bool
     private let onConfigure: () -> Void
     private let onCheckin: () -> Void
+    private let onStatus: (() -> Void)?
     private var hovered = false
     private var dragging = false
     private let separator = NSView()
@@ -665,7 +680,8 @@ final class ProviderRowView: NSView {
         category: String,
         showsCategory: Bool,
         onConfigure: @escaping () -> Void,
-        onCheckin: @escaping () -> Void
+        onCheckin: @escaping () -> Void,
+        onStatus: (() -> Void)? = nil
     ) {
         self.providerID = provider.id
         self.provider = provider
@@ -677,6 +693,7 @@ final class ProviderRowView: NSView {
         self.showsCategory = showsCategory
         self.onConfigure = onConfigure
         self.onCheckin = onCheckin
+        self.onStatus = onStatus
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -722,7 +739,10 @@ final class ProviderRowView: NSView {
         }
         if provider.id == "trae" || provider.id == "workbuddy" {
             if checkinDone {
-                nameRow.addArrangedSubview(CheckinBadgeView())
+                let badge = CheckinBadgeView()
+                badge.toolTip = "今日已签到"
+                badge.setAccessibilityLabel("今日已签到")
+                nameRow.addArrangedSubview(badge)
             } else {
                 let checkin = NSButton(title: "签到", target: self, action: #selector(checkinTapped))
                 checkin.isBordered = false
@@ -734,14 +754,17 @@ final class ProviderRowView: NSView {
             }
         }
         if let serviceStatus = provider.serviceStatus, serviceStatus != "ok" {
-            let statusLabel = label(
-                serviceStatus == "outage" ? "服务故障" : "服务降级",
-                size: 10,
-                weight: .medium,
-                color: serviceStatus == "outage" ? .systemRed : .systemOrange
+            let statusButton = NSButton(
+                title: serviceStatus == "outage" ? "服务故障" : "服务降级",
+                target: self,
+                action: #selector(statusTapped)
             )
-            statusLabel.toolTip = provider.serviceStatusDescription
-            nameRow.addArrangedSubview(statusLabel)
+            statusButton.isBordered = false
+            statusButton.font = .systemFont(ofSize: 10, weight: .medium)
+            statusButton.contentTintColor = serviceStatus == "outage" ? .systemRed : .systemOrange
+            statusButton.toolTip = provider.serviceStatusDescription
+            statusButton.setAccessibilityLabel("查看 \(style.shortName) 服务状态")
+            nameRow.addArrangedSubview(statusButton)
         }
         if provider.status == "warn" && isExhausted(provider) {
             nameRow.addArrangedSubview(label("已用尽", size: 10, weight: .medium, color: .systemRed))
@@ -933,6 +956,10 @@ final class ProviderRowView: NSView {
 
     @objc private func checkinTapped() {
         onCheckin()
+    }
+
+    @objc private func statusTapped() {
+        onStatus?()
     }
 
     override func updateTrackingAreas() {

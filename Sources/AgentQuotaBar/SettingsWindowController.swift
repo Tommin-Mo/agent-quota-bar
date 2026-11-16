@@ -350,8 +350,9 @@ final class SettingsWindowController: NSWindowController {
 
         let scroll = NSScrollView()
         self.scrollView = scroll
-        scroll.hasVerticalScroller = false
-        scroll.verticalScrollElasticity = .none
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.verticalScrollElasticity = .automatic
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scroll)
@@ -858,6 +859,8 @@ final class SettingsWindowController: NSWindowController {
             fixedProviderPopup.lastItem?.representedObject = id
         }
         fixedProviderPopup.font = .systemFont(ofSize: 12)
+        fixedProviderPopup.target = self
+        fixedProviderPopup.action = #selector(fixedProviderSelected)
         fixedProviderPopup.setAccessibilityLabel("固定显示的服务")
         fixedProviderPopup.translatesAutoresizingMaskIntoConstraints = false
         fixedProviderPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
@@ -937,6 +940,7 @@ final class SettingsWindowController: NSWindowController {
         return composePage([
             pageHeader("服务", ""),
             groupCard(rows),
+            label("自动 Cookie：登录态失效时读取本机 Chrome Cookie；仅 OpenCode / WorkBuddy 支持，首次开启可能弹钥匙串授权。", size: 10, color: Theme.tertiary),
             label("关闭的服务会同时从菜单栏和面板移除。", size: 11, color: Theme.tertiary),
         ])
     }
@@ -1389,11 +1393,11 @@ final class SettingsWindowController: NSWindowController {
         }
         configure.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let manageAccounts = NSButton(title: "账户…", target: self, action: #selector(manageAccountsTapped(_:)))
+        let manageAccounts = NSButton(title: "账户管理", target: self, action: #selector(manageAccountsTapped(_:)))
         manageAccounts.bezelStyle = .inline
         manageAccounts.isBordered = false
         manageAccounts.font = .systemFont(ofSize: 11, weight: .medium)
-        manageAccounts.contentTintColor = Theme.secondary
+        manageAccounts.contentTintColor = Theme.accent
         manageAccounts.identifier = NSUserInterfaceItemIdentifier(id)
         manageAccounts.setAccessibilityLabel("管理 \(style.shortName) 账户")
         manageAccounts.toolTip = "添加、编辑、删除或切换账户"
@@ -1573,6 +1577,15 @@ final class SettingsWindowController: NSWindowController {
         loginStatusLabel.textColor = LaunchAtLogin.requiresApproval ? .systemOrange : Theme.tertiary
     }
 
+    private static func displayPlan(_ plan: String) -> String {
+        switch plan.lowercased() {
+        case "prolite": return "Pro Lite"
+        case "pro": return "Pro"
+        case "free": return "免费"
+        default: return plan
+        }
+    }
+
     func updateProviderStatuses(_ snapshot: QuotaSnapshot?) {
         for id in providerOrder {
             guard let views = providerStatusViews[id] else { continue }
@@ -1584,7 +1597,7 @@ final class SettingsWindowController: NSWindowController {
             }
             switch provider.status {
             case "ok":
-                views.text.stringValue = "已连接 · \(provider.plan ?? "自动")"
+                views.text.stringValue = provider.plan.map { "已连接 · \(Self.displayPlan($0))" } ?? "已连接"
                 views.text.textColor = Theme.secondary
                 views.dot.surfaceColor = Theme.success
             case "warn":
@@ -1689,9 +1702,17 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func menuBarModeChanged() {
         let isFixed = (menuBarModePopup.selectedItem?.representedObject as? String) == "fixed"
-        fixedProviderPopup.isEnabled = isFixed
-        fixedProviderPopup.alphaValue = isFixed ? 1 : 0.45
+        fixedProviderPopup.isEnabled = true
+        fixedProviderPopup.alphaValue = isFixed ? 1 : 0.82
         markDirty()
+    }
+
+    @objc private func fixedProviderSelected() {
+        // 选服务即切换为“固定一家”，不再要求用户先改上面的显示方式。
+        if let index = menuBarModePopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == "fixed" }) {
+            menuBarModePopup.selectItem(at: index)
+        }
+        menuBarModeChanged()
     }
 
     @objc private func refreshOptionChanged() {
