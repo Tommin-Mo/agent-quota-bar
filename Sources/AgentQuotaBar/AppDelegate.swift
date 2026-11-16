@@ -963,13 +963,20 @@ final class ClosureButton: NSButton {
 }
 
 final class AvatarView: NSView {
+    private let avatarProvider: String?
+    private let avatarSize: CGFloat
+    private weak var logoView: NSImageView?
+
     init(letter: String, color: NSColor, size: CGFloat, provider: String? = nil) {
+        self.avatarProvider = provider
+        self.avatarSize = size
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         widthAnchor.constraint(equalToConstant: size).isActive = true
         heightAnchor.constraint(equalToConstant: size).isActive = true
         if let provider, let logo = ProviderLogo.image(for: provider, size: size * 0.92, color: Theme.text) {
             let view = NSImageView(image: logo)
+            self.logoView = view
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
             NSLayoutConstraint.activate([
@@ -993,6 +1000,18 @@ final class AvatarView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshInk()
+    }
+
+    func refreshInk() {
+        guard let provider = avatarProvider,
+              let logo = ProviderLogo.image(for: provider, size: avatarSize * 0.92, color: Theme.text) else { return }
+        logoView?.image = logo
+        logoView?.needsDisplay = true
     }
 }
 

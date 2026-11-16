@@ -232,6 +232,8 @@ final class SettingsWindowController: NSWindowController {
     private let dangerSlider = NSSlider()
     private let warningValueLabel = NSTextField(labelWithString: "45%")
     private let dangerValueLabel = NSTextField(labelWithString: "20%")
+    private let warningMaxLabel = NSTextField(labelWithString: "99%")
+    private let dangerMaxLabel = NSTextField(labelWithString: "44%")
     private let notifySwitch = AccentSwitch()
     private let notifyPercentField = NSTextField()
     private let notifyStatusLabel = NSTextField(labelWithString: "")
@@ -289,7 +291,7 @@ final class SettingsWindowController: NSWindowController {
         self.onCheckin = onCheckin
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 820, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -325,7 +327,7 @@ final class SettingsWindowController: NSWindowController {
         }
         contentStack.removeFromSuperview()
 
-        let container = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 820, height: 640))
+        let container = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 820, height: 720))
         container.wantsLayer = true
         container.surfaceColor = Theme.background
 
@@ -356,9 +358,8 @@ final class SettingsWindowController: NSWindowController {
 
         let scroll = NSScrollView()
         self.scrollView = scroll
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.verticalScrollElasticity = .automatic
+        scroll.hasVerticalScroller = false
+        scroll.verticalScrollElasticity = .none
         scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scroll)
@@ -387,7 +388,7 @@ final class SettingsWindowController: NSWindowController {
             scroll.topAnchor.constraint(equalTo: container.topAnchor, constant: 22),
             scroll.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: saveBar.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: saveBar.topAnchor, constant: -10),
         ])
 
         buildSaveBar(in: saveBar)
@@ -627,6 +628,8 @@ final class SettingsWindowController: NSWindowController {
             refreshPopup.lastItem?.representedObject = seconds
         }
         refreshPopup.font = .systemFont(ofSize: 12)
+        refreshPopup.bezelStyle = .rounded
+        refreshPopup.controlSize = .large
         refreshPopup.setAccessibilityLabel("刷新频率")
         refreshPopup.target = self
         refreshPopup.action = #selector(refreshOptionChanged)
@@ -634,6 +637,8 @@ final class SettingsWindowController: NSWindowController {
         refreshPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
 
         proxyField.font = .systemFont(ofSize: 12)
+        proxyField.bezelStyle = .roundedBezel
+        proxyField.controlSize = .large
         proxyField.placeholderString = "auto / http://127.0.0.1:7897 / off"
         proxyField.setAccessibilityLabel("系统代理")
         proxyField.delegate = self
@@ -683,6 +688,8 @@ final class SettingsWindowController: NSWindowController {
         }
         checkinHourPopup.selectItem(at: min(23, max(0, service.config.int("checkin.hour", default: 9))))
         checkinHourPopup.font = .systemFont(ofSize: 12)
+        checkinHourPopup.bezelStyle = .rounded
+        checkinHourPopup.controlSize = .large
         checkinHourPopup.target = self
         checkinHourPopup.action = #selector(checkinHourChanged)
         checkinHourPopup.setAccessibilityLabel("签到时间")
@@ -743,6 +750,8 @@ final class SettingsWindowController: NSWindowController {
         }
         checkinHourPopup.selectItem(at: min(23, max(0, service.config.int("checkin.hour", default: 9))))
         checkinHourPopup.font = .systemFont(ofSize: 12)
+        checkinHourPopup.bezelStyle = .rounded
+        checkinHourPopup.controlSize = .large
         checkinHourPopup.target = self
         checkinHourPopup.action = #selector(checkinHourChanged)
         checkinHourPopup.translatesAutoresizingMaskIntoConstraints = false
@@ -858,6 +867,8 @@ final class SettingsWindowController: NSWindowController {
     private func makeMenuBarPage() -> NSView {
         populateMenuBarModePopup()
         menuBarModePopup.font = .systemFont(ofSize: 12)
+        menuBarModePopup.bezelStyle = .rounded
+        menuBarModePopup.controlSize = .large
         menuBarModePopup.target = self
         menuBarModePopup.action = #selector(menuBarModeChanged)
         menuBarModePopup.setAccessibilityLabel("菜单栏显示方式")
@@ -870,6 +881,8 @@ final class SettingsWindowController: NSWindowController {
             fixedProviderPopup.lastItem?.representedObject = id
         }
         fixedProviderPopup.font = .systemFont(ofSize: 12)
+        fixedProviderPopup.bezelStyle = .rounded
+        fixedProviderPopup.controlSize = .large
         fixedProviderPopup.target = self
         fixedProviderPopup.action = #selector(fixedProviderSelected)
         fixedProviderPopup.setAccessibilityLabel("固定显示的服务")
@@ -995,7 +1008,7 @@ final class SettingsWindowController: NSWindowController {
         for (label, slider) in [("警戒阈值", warningSlider), ("危险阈值", dangerSlider)] {
             slider.minValue = 1
             slider.maxValue = 99
-            slider.isContinuous = false
+            slider.isContinuous = true
             slider.trackFillColor = Theme.accent.resolvedForAppearance()
             slider.target = self
             slider.action = #selector(thresholdChanged)
@@ -1006,6 +1019,10 @@ final class SettingsWindowController: NSWindowController {
         warningSlider.doubleValue = QuotaStyle.warningPercent
         dangerSlider.maxValue = max(2, QuotaStyle.warningPercent - 1)
         dangerSlider.doubleValue = min(QuotaStyle.dangerPercent, dangerSlider.maxValue)
+        for maxLabel in [warningMaxLabel, dangerMaxLabel] {
+            maxLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+            maxLabel.textColor = Theme.tertiary
+        }
         warningValueLabel.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
         dangerValueLabel.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
         updateThresholdLabels()
@@ -1022,9 +1039,9 @@ final class SettingsWindowController: NSWindowController {
         let colorGroup = groupCard([
             controlRow("颜色", colorRow, caption: "点击色块修改；只影响面板和菜单栏。"),
             separator(),
-            controlRow("警戒阈值", NSStackView(views: [label("1%", size: 9, color: Theme.tertiary), warningSlider, label("99%", size: 9, color: Theme.tertiary), warningValueLabel]), caption: "剩余低于该比例时转为警戒色。"),
+            controlRow("警戒阈值", NSStackView(views: [label("1%", size: 9, color: Theme.tertiary), warningSlider, warningMaxLabel, warningValueLabel]), caption: "剩余低于该比例时转为警戒色。"),
             separator(),
-            controlRow("危险阈值", NSStackView(views: [label("1%", size: 9, color: Theme.tertiary), dangerSlider, label("99%", size: 9, color: Theme.tertiary), dangerValueLabel]), caption: "剩余低于该比例时转为危险色。"),
+            controlRow("危险阈值", NSStackView(views: [label("1%", size: 9, color: Theme.tertiary), dangerSlider, dangerMaxLabel, dangerValueLabel]), caption: "剩余低于该比例时转为危险色。"),
         ])
 
         notifySwitch.isOn = service.config.bool("notifications.enabled", default: false)
@@ -1034,6 +1051,8 @@ final class SettingsWindowController: NSWindowController {
         notifySwitch.translatesAutoresizingMaskIntoConstraints = false
 
         notifyPercentField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        notifyPercentField.bezelStyle = .roundedBezel
+        notifyPercentField.controlSize = .large
         notifyPercentField.stringValue = String(format: "%.0f", service.config.double("notifications.percent", default: 20))
         notifyPercentField.alignment = .right
         notifyPercentField.setAccessibilityLabel("通知百分比阈值")
@@ -1075,6 +1094,8 @@ final class SettingsWindowController: NSWindowController {
         func thresholdField(_ id: String, fallback: Double) -> NSTextField {
             let field = NSTextField()
             field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+            field.bezelStyle = .roundedBezel
+            field.controlSize = .large
             field.alignment = .right
             field.stringValue = String(format: "%.0f", service.config.double("style.thresholds.\(id)", default: fallback))
             field.setAccessibilityLabel("\(id) 阈值")
@@ -1125,6 +1146,8 @@ final class SettingsWindowController: NSWindowController {
     private func updateThresholdLabels() {
         warningValueLabel.stringValue = "\(Int(warningSlider.doubleValue.rounded()))%"
         dangerValueLabel.stringValue = "\(Int(dangerSlider.doubleValue.rounded()))%"
+        warningMaxLabel.stringValue = "99%"
+        dangerMaxLabel.stringValue = "\(Int(warningSlider.doubleValue.rounded()) - 1)%"
     }
 
     private func saveStyle() {
@@ -1424,18 +1447,11 @@ final class SettingsWindowController: NSWindowController {
         }
         configure.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let manageAccounts = NSButton(title: "账户管理", target: self, action: #selector(manageAccountsTapped(_:)))
-        manageAccounts.bezelStyle = .inline
-        manageAccounts.isBordered = false
+        let manageAccounts = ClosureButton(title: "账户管理") { [weak self] in
+            self?.manageAccounts(for: id)
+        }
         manageAccounts.font = .systemFont(ofSize: 11, weight: .medium)
         manageAccounts.contentTintColor = Theme.accent
-        manageAccounts.attributedTitle = NSAttributedString(
-            string: "账户管理",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-                .foregroundColor: Theme.accent,
-            ]
-        )
         manageAccounts.identifier = NSUserInterfaceItemIdentifier(id)
         manageAccounts.setAccessibilityLabel("管理 \(style.shortName) 账户")
         manageAccounts.toolTip = "添加、编辑、删除或切换账户"
@@ -1534,8 +1550,8 @@ final class SettingsWindowController: NSWindowController {
         }
     }
 
-    @objc private func manageAccountsTapped(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue, let window, accountManager == nil else { return }
+    private func manageAccounts(for id: String) {
+        guard let window, accountManager == nil else { return }
         let manager = AccountManagerWindowController(provider: id, store: accountStore) { [weak self] in
             guard let self else { return }
             self.reloadAccounts()
@@ -1547,6 +1563,11 @@ final class SettingsWindowController: NSWindowController {
             self?.accountManager = nil
             self?.reloadAccounts()
         }
+    }
+
+    @objc private func manageAccountsTapped(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        manageAccounts(for: id)
     }
 
     // MARK: - 导航
@@ -1637,7 +1658,7 @@ final class SettingsWindowController: NSWindowController {
             case "ok":
                 views.text.stringValue = provider.plan.map { "已连接 · \(Self.displayPlan($0))" } ?? "已连接"
                 views.text.textColor = Theme.secondary
-                views.dot.surfaceColor = Theme.success
+                views.dot.surfaceColor = QuotaStyle.healthyColor
             case "warn":
                 views.text.stringValue = provider.detail ?? "额度紧张"
                 views.text.textColor = .systemOrange
@@ -1733,6 +1754,7 @@ final class SettingsWindowController: NSWindowController {
 
     private func refreshThemedSurfaces(in node: NSView) {
         (node as? ThemedSurfaceView)?.applySurface()
+        (node as? AvatarView)?.refreshInk()
         for subview in node.subviews {
             refreshThemedSurfaces(in: subview)
         }

@@ -650,6 +650,22 @@ final class CheckinBadgeView: NSView {
     }
 }
 
+final class StatusDotView: NSView {
+    var color: NSColor = QuotaStyle.healthyColor {
+        didSet { needsDisplay = true }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        color.setFill()
+        NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5)).fill()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
 final class ProviderRowView: NSView {
     let providerID: String
     private let provider: ProviderStatus
@@ -715,12 +731,10 @@ final class ProviderRowView: NSView {
         let badge = LogoBadgeView(provider: provider.id, color: style.color, size: 24)
 
         let name = label(style.shortName, size: 15, weight: .semibold)
-        let statusDot = NSView()
-        statusDot.wantsLayer = true
+        let statusDot = StatusDotView()
         statusDot.translatesAutoresizingMaskIntoConstraints = false
-        statusDot.widthAnchor.constraint(equalToConstant: 5).isActive = true
-        statusDot.heightAnchor.constraint(equalToConstant: 5).isActive = true
-        statusDot.layer?.cornerRadius = 2.5
+        statusDot.widthAnchor.constraint(equalToConstant: 6).isActive = true
+        statusDot.heightAnchor.constraint(equalToConstant: 6).isActive = true
         let statusColor: NSColor
         switch provider.status {
         case "ok", "warn": statusColor = QuotaStyle.healthyColor
@@ -728,7 +742,7 @@ final class ProviderRowView: NSView {
         case "error": statusColor = .systemRed
         default: statusColor = Theme.tertiary
         }
-        statusDot.layer?.backgroundColor = statusColor.cgColor
+        statusDot.color = statusColor
         statusDot.toolTip = provider.status == "ok" ? "已连接" : (provider.error ?? provider.detail ?? provider.status)
         let nameRow = NSStackView(views: [statusDot, name])
         nameRow.orientation = .horizontal
