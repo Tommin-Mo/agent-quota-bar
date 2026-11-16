@@ -27,6 +27,7 @@ final class QuotaPopoverViewController: NSViewController {
     private let footerLabel = NSTextField(labelWithString: "")
     private let headerActions = NSStackView()
     private let themeButton = HeaderIconButton(symbol: "moon")
+    private let refreshButton = HeaderIconButton(symbol: "arrow.clockwise")
     private let checkinButton = HeaderIconButton(symbol: "checkmark.circle")
     private let insightStack = NSStackView()
     private let costLabel = NSTextField(labelWithString: "")
@@ -125,7 +126,10 @@ final class QuotaPopoverViewController: NSViewController {
         checkinButton.toolTip = "一键签到 Trae + WorkBuddy"
         checkinButton.setIconAccessibilityLabel("一键签到 Trae 和 WorkBuddy")
 
-        let refresh = iconButton("arrow.clockwise", tooltip: "立即刷新", action: #selector(refreshTapped))
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshTapped)
+        refreshButton.toolTip = "立即刷新"
+        refreshButton.setIconAccessibilityLabel("立即刷新")
         let gear = iconButton("gearshape", tooltip: "设置", action: #selector(settingsTapped))
 
         headerActions.orientation = .horizontal
@@ -139,7 +143,7 @@ final class QuotaPopoverViewController: NSViewController {
         headerActions.layer?.borderWidth = 1
         headerActions.layer?.borderColor = Theme.separator.resolvedCGColor()
         headerActions.translatesAutoresizingMaskIntoConstraints = false
-        for button in [checkinButton, themeButton, refresh, gear] { headerActions.addArrangedSubview(button) }
+        for button in [checkinButton, refreshButton, gear] { headerActions.addArrangedSubview(button) }
 
         let headerSpacer = NSView()
         headerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -204,6 +208,7 @@ final class QuotaPopoverViewController: NSViewController {
         footerLabel.font = .systemFont(ofSize: 10)
         footerLabel.textColor = Theme.tertiary
         footerLabel.lineBreakMode = .byTruncatingTail
+        footerLabel.toolTip = "颜色按剩余比例：≥\(QuotaStyle.warningPercent)% 绿，\(QuotaStyle.dangerPercent)%–\(QuotaStyle.warningPercent)% 橙，<\(QuotaStyle.dangerPercent)% 红"
 
         let footerSpacer = NSView()
         footerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -388,6 +393,8 @@ final class QuotaPopoverViewController: NSViewController {
         }
 
         if isRefreshing { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+        refreshButton.isEnabled = !isRefreshing
+        refreshButton.toolTip = isRefreshing ? "正在刷新…" : "立即刷新"
 
         guard let snapshot else {
             subtitleLabel.stringValue = isOffline
@@ -424,12 +431,16 @@ final class QuotaPopoverViewController: NSViewController {
             empty.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
         }
         for (index, provider) in ordered.enumerated() {
+            let category = Self.category(for: provider)
+            let showsCategory = index == 0 || Self.category(for: ordered[index - 1]) != category
             let row = ProviderRowView(
                 provider: provider,
                 todaySpent: UsageTracker.shared.todaySpent(for: provider.id),
                 checkinDone: checkinDone,
                 checkinStreak: service.config.int("checkin.workbuddyStreak", default: 0),
                 costText: resolvedCostText(for: provider),
+                category: category,
+                showsCategory: showsCategory,
                 onConfigure: { [weak self] in
                     self?.onConfigure?(provider.id)
                 },
@@ -446,8 +457,8 @@ final class QuotaPopoverViewController: NSViewController {
         }
 
         subtitleLabel.stringValue = isOffline
-            ? "网络未连接 · 显示 \(timeText(snapshot.updatedDate)) 的数据"
-            : "\(snapshot.usableCount) 个服务 · \(timeText(snapshot.updatedDate))"
+            ? "网络未连接 · 显示上次数据"
+            : (isRefreshing ? "正在刷新…" : "\(snapshot.usableCount) 个服务")
 
         if isOffline {
             footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
@@ -461,6 +472,12 @@ final class QuotaPopoverViewController: NSViewController {
         }
 
         updatePreferredSize()
+    }
+
+    private static func category(for provider: ProviderStatus) -> String {
+        if provider.metrics.contains(where: { $0.kind == "percent" }) { return "订阅额度" }
+        if provider.id == "deepseek" { return "现金余额" }
+        return "积分"
     }
 
     private func orderedProviders(_ snapshot: QuotaSnapshot) -> [ProviderStatus] {
@@ -626,6 +643,8 @@ final class ProviderRowView: NSView {
     private let checkinDone: Bool
     private let checkinStreak: Int
     private let costText: String?
+    private let category: String
+    private let showsCategory: Bool
     private let onConfigure: () -> Void
     private let onCheckin: () -> Void
     private var hovered = false
@@ -643,6 +662,8 @@ final class ProviderRowView: NSView {
         checkinDone: Bool,
         checkinStreak: Int,
         costText: String? = nil,
+        category: String,
+        showsCategory: Bool,
         onConfigure: @escaping () -> Void,
         onCheckin: @escaping () -> Void
     ) {
@@ -652,6 +673,8 @@ final class ProviderRowView: NSView {
         self.checkinDone = checkinDone
         self.checkinStreak = checkinStreak
         self.costText = costText
+        self.category = category
+        self.showsCategory = showsCategory
         self.onConfigure = onConfigure
         self.onCheckin = onCheckin
         super.init(frame: .zero)
@@ -675,12 +698,27 @@ final class ProviderRowView: NSView {
         let badge = LogoBadgeView(provider: provider.id, color: style.color, size: 24)
 
         let name = label(style.shortName, size: 14, weight: .semibold)
-        let nameRow = NSStackView(views: [name])
+        let statusDot = NSView()
+        statusDot.wantsLayer = true
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
+        statusDot.widthAnchor.constraint(equalToConstant: 5).isActive = true
+        statusDot.heightAnchor.constraint(equalToConstant: 5).isActive = true
+        statusDot.layer?.cornerRadius = 2.5
+        let statusColor: NSColor
+        switch provider.status {
+        case "ok", "warn": statusColor = QuotaStyle.healthyColor
+        case "unconfigured": statusColor = .systemOrange
+        case "error": statusColor = .systemRed
+        default: statusColor = Theme.tertiary
+        }
+        statusDot.layer?.backgroundColor = statusColor.cgColor
+        statusDot.toolTip = provider.status == "ok" ? "已连接" : (provider.error ?? provider.detail ?? provider.status)
+        let nameRow = NSStackView(views: [statusDot, name])
         nameRow.orientation = .horizontal
         nameRow.spacing = 5
         nameRow.alignment = .centerY
         if let plan = provider.plan, !plan.isEmpty {
-            nameRow.addArrangedSubview(label(plan, size: 10, color: Theme.tertiary))
+            nameRow.addArrangedSubview(label(Self.displayPlan(plan), size: 10, color: Theme.tertiary))
         }
         if provider.id == "trae" || provider.id == "workbuddy" {
             if checkinDone {
@@ -715,8 +753,8 @@ final class ProviderRowView: NSView {
             nameRow.addArrangedSubview(label("待配置", size: 10, weight: .medium, color: .systemOrange))
         }
 
-        let sub = label(subtitle(for: provider), size: 12, color: Theme.tertiary)
-        let info = NSStackView(views: [nameRow, sub])
+        let subText = subtitle(for: provider)
+        let info = NSStackView(views: subText.isEmpty ? [nameRow] : [nameRow, label(subText, size: 12, color: Theme.tertiary)])
         info.orientation = .vertical
         info.alignment = .leading
         info.spacing = 1
@@ -733,6 +771,9 @@ final class ProviderRowView: NSView {
         valueRow.alignment = .firstBaseline
         valueRow.spacing = 4
         valueRow.addArrangedSubview(value)
+        if provider.id == "trae" || provider.id == "workbuddy" {
+            valueRow.addArrangedSubview(label("积分", size: 10, color: Theme.tertiary))
+        }
         let valueStack = NSStackView()
         valueStack.orientation = .vertical
         valueStack.alignment = .trailing
@@ -755,6 +796,13 @@ final class ProviderRowView: NSView {
             valueStack.addArrangedSubview(caption)
         }
 
+        if showsCategory {
+            let categoryLabel = label(category, size: 10, weight: .medium, color: Theme.tertiary)
+            categoryLabel.setAccessibilityLabel("分组：\(category)")
+            stack.addArrangedSubview(categoryLabel)
+            categoryLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
         let header = NSStackView(views: [badge, info, spacer, valueStack])
         header.orientation = .horizontal
         header.alignment = .centerY
@@ -774,42 +822,59 @@ final class ProviderRowView: NSView {
         }
 
         let percentMetrics = provider.metrics.filter { $0.kind == "percent" }
-        for metric in percentMetrics.prefix(3) {
+        for (index, metric) in percentMetrics.prefix(3).enumerated() {
             let remaining = metric.remainingPercent ?? 0
+            let used = metric.usedPercent ?? max(0, 100 - remaining)
             let severity = QuotaSeverity.from(remaining: remaining)
+            let primary = index == 0
+            let titleSize: CGFloat = primary ? 12 : 11
 
+            // 维度名在左，剩余在右；重置时间放到进度条下方，避免左右来回找对应关系。
             let meta = NSStackView()
             meta.orientation = .horizontal
             meta.spacing = 8
             meta.alignment = .centerY
-            let used = metric.usedPercent ?? max(0, 100 - remaining)
             meta.addArrangedSubview(label(
-                "\(metric.label) · 已用 \(Int(used.rounded()))%",
-                size: 12,
+                metric.label,
+                size: titleSize,
                 weight: .medium,
                 color: Theme.secondary
             ))
             let metaSpacer = NSView()
             metaSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             meta.addArrangedSubview(metaSpacer)
-            if let detail = metric.detail, !detail.isEmpty {
-                meta.addArrangedSubview(label(detail, size: 10, color: Theme.tertiary))
-            }
             meta.addArrangedSubview(label(
                 "剩 \(Int(remaining.rounded()))%",
-                size: 12,
+                size: titleSize,
                 weight: .semibold,
                 color: remaining <= QuotaStyle.warningPercent ? severity.color : Theme.secondary
             ))
+            if !primary, let detail = metric.detail, !detail.isEmpty {
+                meta.addArrangedSubview(label("· \(detail)", size: 9, color: Theme.tertiary))
+            }
             stack.addArrangedSubview(meta)
             meta.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
+            // 行业语义：填充 = 已使用，不再用“剩余”填充。
             let barColor = remaining <= QuotaStyle.warningPercent ? severity.color : QuotaStyle.healthyColor
-            let bar = BarView(progress: remaining / 100, color: barColor)
+            let visualProgress = used > 0 ? max(0.03, used / 100) : 0
+            let bar = BarView(progress: visualProgress, color: barColor)
             bar.translatesAutoresizingMaskIntoConstraints = false
             stack.addArrangedSubview(bar)
-            bar.heightAnchor.constraint(equalToConstant: 4).isActive = true
+            bar.heightAnchor.constraint(equalToConstant: primary ? 4 : 3).isActive = true
             bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+
+            var detailParts = ["已用 \(Int(used.rounded()))%"]
+            if let detail = metric.detail, !detail.isEmpty { detailParts.append(detail) }
+            if primary {
+                let detailRow = label(
+                    detailParts.joined(separator: " · "),
+                    size: 10,
+                    color: Theme.tertiary
+                )
+                stack.addArrangedSubview(detailRow)
+                detailRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            }
         }
 
         if !["deepseek", "trae", "workbuddy"].contains(provider.id),
@@ -912,6 +977,15 @@ final class ProviderRowView: NSView {
     }
 
     /// 去掉 “赠金 ¥0.00 ·” 这类没有参考价值的零值片段，避免底部一行被零占据。
+    private static func displayPlan(_ plan: String) -> String {
+        switch plan.lowercased() {
+        case "prolite": return "Pro Lite"
+        case "pro": return "Pro"
+        case "free": return "免费"
+        default: return plan
+        }
+    }
+
     private func compactDetail(_ text: String?) -> String? {
         guard let text, !text.isEmpty else { return nil }
         let parts = text
@@ -932,7 +1006,6 @@ final class ProviderRowView: NSView {
     private func subtitle(for provider: ProviderStatus) -> String {
         switch provider.status {
         case "ok", "warn":
-            if provider.id == "trae" || provider.id == "workbuddy" { return "积分" }
             if provider.id == "codex" {
                 if let raw = provider.subscriptionUntil,
                    let date = ISO8601DateFormatter.flexible.date(from: raw)
@@ -946,7 +1019,9 @@ final class ProviderRowView: NSView {
                 return "ChatGPT 订阅"
             }
             if provider.id == "deepseek" { return "API 余额（按量计费）" }
-            return provider.detail ?? "已连接"
+            if provider.id == "trae" || provider.id == "workbuddy" { return "" }
+            let detail = provider.detail ?? "已连接"
+            return detail.replacingOccurrences(of: " 订阅额度", with: "")
         case "error":
             return errorSummary(for: provider)
         case "unconfigured":

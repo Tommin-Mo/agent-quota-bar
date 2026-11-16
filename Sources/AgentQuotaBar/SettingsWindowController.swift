@@ -220,6 +220,8 @@ final class SettingsWindowController: NSWindowController {
     private let scaleLabel = NSTextField(labelWithString: "125%")
     private let scalePreview = NSImageView()
     private let hintLabel = NSTextField(labelWithString: "")
+    private weak var saveButton: AccentButton?
+    private var suppressDirty = true
     private let appearanceControl = NSSegmentedControl()
     private let checkinSwitch = AccentSwitch()
     private let checkinHourPopup = NSPopUpButton()
@@ -302,6 +304,7 @@ final class SettingsWindowController: NSWindowController {
         window.contentView = buildContent()
         selectPage(selectedPage)
         loadValues()
+        suppressDirty = false
         updateProviderStatuses(service.snapshot)
         reloadAccounts()
         NotificationCenter.default.addObserver(
@@ -556,7 +559,8 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func buildSaveBar(in bar: NSView) {
-        let openConfig = NSButton(title: "打开配置文件", target: self, action: #selector(openConfig))
+        let openConfig = NSButton(title: "打开配置文件（JSON）", target: self, action: #selector(openConfig))
+        openConfig.toolTip = "在默认编辑器中打开 config.json；会直接修改配置"
         openConfig.isBordered = false
         openConfig.font = .systemFont(ofSize: 11)
         openConfig.contentTintColor = Theme.secondary
@@ -564,8 +568,10 @@ final class SettingsWindowController: NSWindowController {
         hintLabel.font = .systemFont(ofSize: 10.5)
         hintLabel.textColor = Theme.secondary
         hintLabel.setAccessibilityLabel("保存状态")
+        hintLabel.toolTip = "修改后需点击右侧「保存」；部分外观/开关会即时生效"
 
         let save = AccentButton(title: "保存", target: self, action: #selector(save))
+        saveButton = save
         save.isBordered = false
         save.font = .systemFont(ofSize: 13, weight: .semibold)
         save.keyEquivalent = "\r"
@@ -610,12 +616,15 @@ final class SettingsWindowController: NSWindowController {
         }
         refreshPopup.font = .systemFont(ofSize: 12)
         refreshPopup.setAccessibilityLabel("刷新频率")
+        refreshPopup.target = self
+        refreshPopup.action = #selector(refreshOptionChanged)
         refreshPopup.translatesAutoresizingMaskIntoConstraints = false
         refreshPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
 
         proxyField.font = .systemFont(ofSize: 12)
-        proxyField.placeholderString = "auto"
+        proxyField.placeholderString = "auto / http://127.0.0.1:7897 / off"
         proxyField.setAccessibilityLabel("系统代理")
+        proxyField.delegate = self
         proxyField.translatesAutoresizingMaskIntoConstraints = false
         proxyField.widthAnchor.constraint(equalToConstant: 260).isActive = true
 
@@ -691,11 +700,11 @@ final class SettingsWindowController: NSWindowController {
         ])
 
         let preferencesGroup = groupCard([
-            controlRow("刷新频率", refreshPopup, caption: nil),
+            controlRow("刷新频率", refreshPopup, caption: "打开 App 后的自动刷新间隔；后台采样独立运行。"),
             separator(),
-            controlRow("系统代理", proxyField, caption: nil),
+            controlRow("系统代理", proxyField, caption: "auto 使用系统代理；也可填 http://127.0.0.1:7897；off 关闭。"),
             separator(),
-            controlRow("外观", appearanceControl, caption: nil),
+            controlRow("外观", appearanceControl, caption: "只影响 AgentQuotaBar，不修改系统外观。"),
             separator(),
             controlRow("开机自启动", loginColumn, caption: nil),
         ])
@@ -821,7 +830,7 @@ final class SettingsWindowController: NSWindowController {
         let current = menuBarModePopup.selectedItem?.representedObject as? String
             ?? service.config.string("menuBarMode", default: "auto")
         menuBarModePopup.removeAllItems()
-        menuBarModePopup.addItem(withTitle: "自动切换（谁变化显示谁）")
+        menuBarModePopup.addItem(withTitle: "自动切换（最近使用）")
         menuBarModePopup.lastItem?.representedObject = "auto"
         menuBarModePopup.addItem(withTitle: "固定一家")
         menuBarModePopup.lastItem?.representedObject = "fixed"
@@ -898,20 +907,15 @@ final class SettingsWindowController: NSWindowController {
         resetOrder.font = .systemFont(ofSize: 11)
 
         let group1 = groupCard([
-            controlRow("显示方式", menuBarModePopup, caption: "自动切换会记住最近发生变化的那一家。"),
+            controlRow("显示方式", menuBarModePopup, caption: "自动切换优先跟随最近使用的服务。"),
             separator(),
-            controlRow("固定显示", fixedProviderPopup, caption: "仅在「固定一家」时生效。"),
+            controlRow("固定显示", fixedProviderPopup, caption: "仅当显示方式为「固定一家」时可用。"),
         ])
         let group2 = groupCard([
             controlRow("图标大小", scaleBox, caption: nil),
         ])
         let group3 = groupCard([
-            controlRow("面板顺序", resetOrder, caption: "在面板里上下拖动行即可排序。"),
-        ])
-        let help = groupCard([
-            controlRow("自动切换", label("10 秒冷却，避免来回跳", size: 12, color: Theme.secondary), caption: nil),
-            separator(),
-            controlRow("面板排序", label("在面板里上下拖动行", size: 12, color: Theme.secondary), caption: nil),
+            controlRow("面板顺序", resetOrder, caption: "在主面板拖动行排序；这里只恢复默认顺序。"),
         ])
         return composePage([
             pageHeader("菜单栏", ""),
@@ -921,8 +925,6 @@ final class SettingsWindowController: NSWindowController {
             group2,
             groupLabel("顺序"),
             group3,
-            groupLabel("提示"),
-            help,
         ])
     }
 
@@ -983,11 +985,11 @@ final class SettingsWindowController: NSWindowController {
             if index < 2 { colorRow.setCustomSpacing(16, after: colorWells[index]) }
         }
         let colorGroup = groupCard([
-            controlRow("颜色", colorRow, caption: nil),
+            controlRow("颜色", colorRow, caption: "点击色块修改；只影响面板和菜单栏。"),
             separator(),
-            controlRow("警戒阈值", NSStackView(views: [warningSlider, warningValueLabel]), caption: nil),
+            controlRow("警戒阈值", NSStackView(views: [label("1%", size: 9, color: Theme.tertiary), warningSlider, label("99%", size: 9, color: Theme.tertiary), warningValueLabel]), caption: "剩余低于该比例时转为警戒色。"),
             separator(),
-            controlRow("危险阈值", NSStackView(views: [dangerSlider, dangerValueLabel]), caption: nil),
+            controlRow("危险阈值", NSStackView(views: [label("1%", size: 9, color: Theme.tertiary), dangerSlider, label("99%", size: 9, color: Theme.tertiary), dangerValueLabel]), caption: "剩余低于该比例时转为危险色。"),
         ])
 
         notifySwitch.isOn = service.config.bool("notifications.enabled", default: false)
@@ -1202,7 +1204,7 @@ final class SettingsWindowController: NSWindowController {
         let path = label(config, size: 11, color: Theme.secondary)
         path.lineBreakMode = .byTruncatingMiddle
 
-        let open = NSButton(title: "打开配置文件", target: self, action: #selector(openConfig))
+        let open = NSButton(title: "打开配置文件（JSON）", target: self, action: #selector(openConfig))
         open.bezelStyle = .rounded
         open.font = .systemFont(ofSize: 11)
 
@@ -1269,8 +1271,8 @@ final class SettingsWindowController: NSWindowController {
         return card
     }
 
-    private func controlRow(_ title: String, _ control: NSView, caption _: String?) -> NSView {
-        let caption: String? = nil
+    private func controlRow(_ title: String, _ control: NSView, caption captionText: String?) -> NSView {
+        let caption = captionText
         let titleLabel = label(title, size: 14)
         titleLabel.setContentHuggingPriority(.required, for: .horizontal)
 
@@ -1374,13 +1376,13 @@ final class SettingsWindowController: NSWindowController {
         autoCookie.toolTip = "自动从 Chrome 读取登录 Cookie（仅 OpenCode / WorkBuddy）"
         autoCookie.setAccessibilityLabel("\(style.shortName) 自动从 Chrome 读取 Cookie")
         autoCookie.isHidden = !(id == "opencode" || id == "workbuddy")
-        let autoCookieLabel = label("自动", size: 10, color: Theme.tertiary)
+        let autoCookieLabel = label("自动 Cookie", size: 10, color: Theme.tertiary)
         autoCookieLabel.isHidden = autoCookie.isHidden
         autoCookieLabel.toolTip = "仅在没有可用登录态或登录态失效时回退到 Chrome Cookie"
         autoCookieLabel.setContentHuggingPriority(.required, for: .horizontal)
         autoCookieLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         autoCookieLabel.translatesAutoresizingMaskIntoConstraints = false
-        autoCookieLabel.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        autoCookieLabel.widthAnchor.constraint(equalToConstant: 58).isActive = true
 
         let configure = ClosureButton(title: "配置…") { [weak self] in
             self?.onOpenSetup(id)
@@ -1689,6 +1691,18 @@ final class SettingsWindowController: NSWindowController {
         let isFixed = (menuBarModePopup.selectedItem?.representedObject as? String) == "fixed"
         fixedProviderPopup.isEnabled = isFixed
         fixedProviderPopup.alphaValue = isFixed ? 1 : 0.45
+        markDirty()
+    }
+
+    @objc private func refreshOptionChanged() {
+        markDirty()
+    }
+
+    private func markDirty() {
+        guard !suppressDirty else { return }
+        hintLabel.stringValue = "有未保存修改"
+        hintLabel.textColor = .systemOrange
+        saveButton?.title = "保存 *"
     }
 
     @objc private func loginSwitchChanged() {
@@ -1781,6 +1795,7 @@ final class SettingsWindowController: NSWindowController {
             try config.save()
             hintLabel.stringValue = "已保存"
             hintLabel.textColor = Theme.secondary
+            saveButton?.title = "保存"
             onSaved()
         } catch {
             hintLabel.stringValue = "保存失败：\(error.localizedDescription)"
@@ -1790,6 +1805,13 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func openConfig() {
         NSWorkspace.shared.open(service.config.url)
+    }
+}
+
+extension SettingsWindowController: NSTextFieldDelegate {
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField, field === proxyField else { return }
+        markDirty()
     }
 }
 
