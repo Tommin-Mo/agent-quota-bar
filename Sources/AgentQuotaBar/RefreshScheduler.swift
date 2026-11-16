@@ -11,7 +11,7 @@ import Foundation
 /// 计算本轮到底该抓哪几家，再发一次 `--only=` 请求。不会重叠，也不会互相饿死。
 final class RefreshScheduler {
     private let service: QuotaService
-    private let providerIDs = ["codex", "deepseek", "opencode", "trae", "workbuddy"]
+    private var providerIDs: [String] { ProviderRegistry.ids }
     private var timer: Timer?
     private var nextDue: [String: Date] = [:]
     private var forceAll = false

@@ -5,12 +5,11 @@ import Foundation
 /// CodexBar 这类工具就是用 `NSWorkspace.frontmostApplication` 做 provider 切换，
 /// 比单纯看额度变化可靠得多。
 final class FrontmostProviderMonitor {
-    static let bundleMap: [String: String] = [
-        "ai.opencode.desktop": "opencode",
-        "com.openai.codex": "codex",
-        "com.tencent.workbuddy.mac": "workbuddy",
-        "cn.trae.app": "trae",
-    ]
+    static var bundleMap: [String: String] {
+        Dictionary(uniqueKeysWithValues: ProviderRegistry.all.flatMap { provider in
+            provider.nativeAppBundleIDs.map { ($0, provider.id) }
+        })
+    }
 
     private var observers: [NSObjectProtocol] = []
     private(set) var currentProvider: String?

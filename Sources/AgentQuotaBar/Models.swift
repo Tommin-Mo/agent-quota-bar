@@ -38,6 +38,9 @@ struct ProviderStatus: Codable, Identifiable {
     let plan: String?
     let consumed: Double?
     let balance: Double?
+    let subscriptionUntil: String?
+    let subscriptionRenewsAt: String?
+    let subscriptionWillRenew: Bool?
 
     var isUsable: Bool { status == "ok" || status == "warn" }
 }

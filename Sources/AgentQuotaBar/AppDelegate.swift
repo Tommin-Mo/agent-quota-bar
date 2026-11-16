@@ -790,9 +790,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menu.addItem(auto)
         menu.addItem(.separator())
 
-        for id in ["codex", "opencode", "deepseek", "workbuddy", "trae"] {
-            let style = ProviderStyles.style(for: id)
-            let item = NSMenuItem(title: style.shortName, action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
+        for descriptor in ProviderRegistry.all {
+            let id = descriptor.id
+            let item = NSMenuItem(title: descriptor.shortName, action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = id
             item.state = (mode == "fixed" && current == id) ? .on : .off

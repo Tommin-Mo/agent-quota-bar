@@ -753,7 +753,18 @@ final class ProviderRowView: NSView {
         switch provider.status {
         case "ok", "warn":
             if provider.id == "trae" || provider.id == "workbuddy" { return "积分" }
-            if provider.id == "codex" { return "ChatGPT 订阅" }
+            if provider.id == "codex" {
+                if let raw = provider.subscriptionUntil,
+                   let date = ISO8601DateFormatter.flexible.date(from: raw)
+                    ?? ISO8601DateFormatter().date(from: raw) {
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "zh_CN")
+                    formatter.dateFormat = "M/d"
+                    let renew = provider.subscriptionWillRenew == true ? " · 自动续费" : ""
+                    return "ChatGPT 订阅 · \(formatter.string(from: date)) 到期\(renew)"
+                }
+                return "ChatGPT 订阅"
+            }
             if provider.id == "deepseek" { return "API 余额（按量计费）" }
             return provider.detail ?? "已连接"
         case "error":

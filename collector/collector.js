@@ -463,12 +463,39 @@ function collectCodex() {
     return failed('codex', 'Codex', '用量接口没有返回可识别的窗口');
   }
 
+  // 订阅信息不在 usage 里：单独读账号 entitlement，失败不影响额度。
+  let subscription = {};
+  try {
+    const accountRes = http('https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'chatgpt-account-id': accountId,
+        'User-Agent': 'codex-cli/0.100.0',
+        Accept: 'application/json',
+      },
+    });
+    const accounts = accountRes.json?.accounts || {};
+    const selected = accounts[accountId] || accounts.default || Object.values(accounts)[0];
+    const entitlement = selected?.entitlement;
+    const last = selected?.last_active_subscription;
+    if (entitlement) {
+      subscription = {
+        subscriptionUntil: entitlement.expires_at || null,
+        subscriptionRenewsAt: entitlement.renews_at || null,
+        subscriptionWillRenew: typeof last?.will_renew === 'boolean' ? last.will_renew : null,
+      };
+    }
+  } catch {
+    // 额度仍然可用，订阅字段可选。
+  }
+
   const headlineMetric = metrics.find((m) => m.kind === 'percent');
   return provider('codex', 'Codex', rateLimit.allowed === false ? 'warn' : 'ok', metrics, {
     account: email,
     plan,
     headline: headlineMetric ? `${Math.round(headlineMetric.remainingPercent)}%` : '',
     detail: rateLimit.allowed === false ? '本周额度已用尽' : 'Codex 订阅额度',
+    ...subscription,
   });
 }
 
