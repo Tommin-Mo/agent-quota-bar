@@ -261,6 +261,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if env["AQB_OPEN_SETTINGS"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.openSettings()
+                if let page = env["AQB_SETTINGS_PAGE"] {
+                    self?.settingsController?.selectPageForDebug(page)
+                }
                 if let path = env["AQB_SETTINGS_SNAPSHOT"] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
                         guard let view = self?.settingsController?.window?.contentView else { return }

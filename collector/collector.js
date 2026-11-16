@@ -279,6 +279,22 @@ function http(url, opts = {}) {
 // 状态页只用于可选的健康提示：任何失败都静默省略字段，绝不影响额度结果。
 const STATUS_TIMEOUT_SECONDS = 2;
 const STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
+const STATUS_CACHE_PATH = path.join(path.dirname(CONFIG_PATH), 'status-cache.json');
+
+function readStatusCacheFile() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(STATUS_CACHE_PATH, 'utf8'));
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch { return {}; }
+}
+
+function writeStatusCacheFile(providerId, entry) {
+  try {
+    const all = readStatusCacheFile();
+    all[providerId] = entry;
+    writeFileAtomic(STATUS_CACHE_PATH, JSON.stringify(all), { mode: 0o600 });
+  } catch {}
+}
 const STATUS_DEFAULT_DESCRIPTION = {
   ok: 'All systems operational',
   degraded: 'Degraded performance',
@@ -434,6 +450,11 @@ function getProviderHealth(providerId, options = {}) {
     const cached = STATUS_CACHE.get(providerId);
     const age = cached ? now - cached.at : -1;
     if (cached && age >= 0 && age < ttl) return cached.value ? { ...cached.value } : null;
+    const fileEntry = options.cacheFile === false ? null : readStatusCacheFile()[providerId];
+    if (fileEntry && Number.isFinite(fileEntry.at) && now - fileEntry.at >= 0 && now - fileEntry.at < ttl) {
+      STATUS_CACHE.set(providerId, { at: fileEntry.at, value: fileEntry.value || null });
+      return fileEntry.value ? { ...fileEntry.value } : null;
+    }
   }
   let value = null;
   try {
@@ -442,7 +463,10 @@ function getProviderHealth(providerId, options = {}) {
   } catch {
     value = null;
   }
-  if (useCache) STATUS_CACHE.set(providerId, { at: now, value });
+  if (useCache) {
+    STATUS_CACHE.set(providerId, { at: now, value });
+    if (options.cacheFile !== false) writeStatusCacheFile(providerId, { at: now, value });
+  }
   return value ? { ...value } : null;
 }
 

@@ -1377,6 +1377,8 @@ final class SettingsWindowController: NSWindowController {
         let autoCookieLabel = label("自动", size: 10, color: Theme.tertiary)
         autoCookieLabel.isHidden = autoCookie.isHidden
         autoCookieLabel.toolTip = "仅在没有可用登录态或登录态失效时回退到 Chrome Cookie"
+        autoCookieLabel.setContentHuggingPriority(.required, for: .horizontal)
+        autoCookieLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let configure = ClosureButton(title: "配置…") { [weak self] in
             self?.onOpenSetup(id)
@@ -1484,6 +1486,12 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func navTapped(_ sender: SidebarButton) {
         selectPage(sender.tag)
+    }
+
+    /// 仅供截图/回归：按名称切换设置页。
+    func selectPageForDebug(_ name: String) {
+        let map = ["general": 0, "menubar": 1, "services": 2, "alerts": 3, "about": 4]
+        if let index = map[name] { selectPage(index) }
     }
 
     private func selectPage(_ index: Int) {
