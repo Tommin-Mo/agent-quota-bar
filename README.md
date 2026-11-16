@@ -245,6 +245,16 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
 - 每个 provider 一个 `collectXxx()`，单家失败只影响自己那一行；
 - 只写本机状态：`config.json`（含凭证）、`usage.json` / `history.json` / `last-snapshot.json`、两个 LaunchAgent plist；不会改第三方登录态。
 
+## 浏览器扩展（可选）
+
+`browser-extension/` 是一个只读查看器，启动：
+
+```bash
+node scripts/quota-server.js
+```
+
+然后在 Chrome 加载已解压扩展。详见 `browser-extension/README.md`。
+
 ## SwiftBar / xbar 小组件
 
 可选：用 `scripts/agent-quota.swiftbar.js` 把同一份数据放到 SwiftBar/xbar：
