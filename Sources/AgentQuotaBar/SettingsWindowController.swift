@@ -1365,12 +1365,21 @@ final class SettingsWindowController: NSWindowController {
         account.isHidden = true
         accountPopups[id] = account
 
+        let autoCookie = AccentSwitch()
+        autoCookie.isOn = service.config.bool("providers.\(id).autoCookie", default: false)
+        autoCookie.identifier = NSUserInterfaceItemIdentifier(id)
+        autoCookie.target = self
+        autoCookie.action = #selector(autoCookieChanged(_:))
+        autoCookie.toolTip = "自动从 Chrome 读取登录 Cookie（仅 OpenCode / WorkBuddy）"
+        autoCookie.setAccessibilityLabel("\(style.shortName) 自动从 Chrome 读取 Cookie")
+        autoCookie.isHidden = !(id == "opencode" || id == "workbuddy")
+
         let configure = ClosureButton(title: "配置…") { [weak self] in
             self?.onOpenSetup(id)
         }
         configure.font = .systemFont(ofSize: 11, weight: .medium)
 
-        let row = NSStackView(views: [avatar, info, spacer, account, visibility, configure])
+        let row = NSStackView(views: [avatar, info, spacer, autoCookie, account, visibility, configure])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 11
@@ -1403,6 +1412,23 @@ final class SettingsWindowController: NSWindowController {
                 ? "切换 \(ProviderStyles.style(for: id).shortName) 账户"
                 : nil
         }
+    }
+
+    @objc private func autoCookieChanged(_ sender: AccentSwitch) {
+        guard let id = sender.identifier?.rawValue else { return }
+        service.config.set("providers.\(id).autoCookie", sender.isOn)
+        do {
+            try service.config.save()
+        } catch {
+            hintLabel.stringValue = "保存失败：\(error.localizedDescription)"
+            hintLabel.textColor = .systemRed
+            return
+        }
+        hintLabel.stringValue = sender.isOn
+            ? "已开启 \(ProviderStyles.style(for: id).shortName) 自动 Cookie；首次读取可能弹出钥匙串授权"
+            : "已关闭 \(ProviderStyles.style(for: id).shortName) 自动 Cookie"
+        hintLabel.textColor = Theme.secondary
+        service.refresh()
     }
 
     @objc private func accountChanged(_ sender: NSPopUpButton) {
