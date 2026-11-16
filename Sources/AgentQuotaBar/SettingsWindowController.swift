@@ -825,7 +825,7 @@ final class SettingsWindowController: NSWindowController {
         menuBarModePopup.addItem(withTitle: "固定一家")
         menuBarModePopup.lastItem?.representedObject = "fixed"
         if mergedMenuBarModeAvailable || current == "merged" {
-            menuBarModePopup.addItem(withTitle: "合并显示（所有服务）")
+            menuBarModePopup.addItem(withTitle: "合并显示（最紧张）")
             menuBarModePopup.lastItem?.representedObject = "merged"
         }
         if let index = menuBarModePopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == current }) {

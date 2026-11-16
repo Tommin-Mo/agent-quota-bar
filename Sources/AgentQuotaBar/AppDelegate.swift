@@ -639,6 +639,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
 
+        if mode == "merged" {
+            // 单图标合并模式：显示最紧张的一家；展开面板仍看全部。
+            activeProviderID = snapshot.worstProviderID()
+            pendingUsage = nil
+            return
+        }
+
         let now = Date()
         let usageTimestamp = snapshot.updatedDate ?? now
         for provider in candidates where provider.isUsable {
@@ -866,6 +873,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self?.checkin.runNow(manual: true)
                 }
             )
+            settingsController?.mergedMenuBarModeAvailable = true
         }
         settingsController?.showWindow(nil)
         settingsController?.window?.makeKeyAndOrderFront(nil)
