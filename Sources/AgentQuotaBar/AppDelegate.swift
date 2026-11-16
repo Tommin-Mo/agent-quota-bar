@@ -265,7 +265,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self?.settingsController?.selectPageForDebug(page)
                 }
                 if let provider = env["AQB_ACCOUNT_MANAGER"] {
-                    self?.settingsController?.openAccountManagerForDebug(provider)
+                    self?.settingsController?.openAccountManagerForDebug(
+                        provider,
+                        showForm: env["AQB_ACCOUNT_FORM"] == "1")
                 }
                 if let path = env["AQB_SETTINGS_SNAPSHOT"] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {

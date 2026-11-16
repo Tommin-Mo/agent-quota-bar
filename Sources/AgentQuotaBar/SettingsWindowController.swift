@@ -1470,7 +1470,7 @@ final class SettingsWindowController: NSWindowController {
     }
 
     /// 仅供截图/回归：打开某家的账户管理 sheet。
-    func openAccountManagerForDebug(_ provider: String) {
+    func openAccountManagerForDebug(_ provider: String, showForm: Bool = false) {
         guard let window, accountManager == nil else { return }
         let manager = AccountManagerWindowController(provider: provider, store: accountStore) { [weak self] in
             guard let self else { return }
@@ -1482,6 +1482,11 @@ final class SettingsWindowController: NSWindowController {
         window.beginSheet(sheet) { [weak self] _ in
             self?.accountManager = nil
             self?.reloadAccounts()
+        }
+        if showForm {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                manager.beginFormForDebug()
+            }
         }
     }
 
@@ -1836,6 +1841,11 @@ final class AccountManagerWindowController: NSWindowController {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 仅供截图/回归：直接展开添加表单。
+    func beginFormForDebug() {
+        beginForm(editing: nil)
+    }
 
     // MARK: 构建
 
