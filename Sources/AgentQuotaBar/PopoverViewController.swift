@@ -102,12 +102,14 @@ final class QuotaPopoverViewController: NSViewController {
 
         subtitleLabel.font = .systemFont(ofSize: 11)
         subtitleLabel.textColor = Theme.tertiary
+        subtitleLabel.isHidden = true
         subtitleLabel.lineBreakMode = .byTruncatingTail
 
         let titles = NSStackView(views: [titleLabel, subtitleLabel])
         titles.orientation = .vertical
         titles.alignment = .leading
         titles.spacing = 1
+        titles.detachesHiddenViews = true
 
         spinner.style = .spinning
         spinner.controlSize = .small
@@ -459,9 +461,9 @@ final class QuotaPopoverViewController: NSViewController {
             row.addGestureRecognizer(pan)
         }
 
-        subtitleLabel.stringValue = isOffline
-            ? "网络未连接 · 显示上次数据"
-            : (isRefreshing ? "正在刷新…" : "\(snapshot.usableCount) 个服务")
+        let subtitle = isOffline ? "网络未连接 · 显示上次数据" : (isRefreshing ? "正在刷新…" : "")
+        subtitleLabel.stringValue = subtitle
+        subtitleLabel.isHidden = subtitle.isEmpty
 
         if isOffline {
             footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
@@ -719,11 +721,11 @@ final class ProviderRowView: NSView {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 7
+        stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
@@ -744,7 +746,7 @@ final class ProviderRowView: NSView {
         }
         statusDot.color = statusColor
         statusDot.toolTip = provider.status == "ok" ? "已连接" : (provider.error ?? provider.detail ?? provider.status)
-        let nameRow = NSStackView(views: [statusDot, name])
+        let nameRow = NSStackView(views: [name])
         nameRow.orientation = .horizontal
         nameRow.spacing = 5
         nameRow.alignment = .centerY
@@ -840,7 +842,7 @@ final class ProviderRowView: NSView {
             categoryLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
-        let header = NSStackView(views: [badge, info, spacer, valueStack])
+        let header = NSStackView(views: [statusDot, badge, info, spacer, valueStack])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 9
@@ -880,12 +882,14 @@ final class ProviderRowView: NSView {
             let metaSpacer = NSView()
             metaSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             meta.addArrangedSubview(metaSpacer)
-            meta.addArrangedSubview(label(
-                "剩 \(Int(remaining.rounded()))%",
-                size: titleSize,
-                weight: .semibold,
-                color: remaining <= QuotaStyle.warningPercent ? severity.color : Theme.secondary
-            ))
+            if percentMetrics.count > 1, !primary {
+                meta.addArrangedSubview(label(
+                    "剩 \(Int(remaining.rounded()))%",
+                    size: titleSize,
+                    weight: .semibold,
+                    color: remaining <= QuotaStyle.warningPercent ? severity.color : Theme.secondary
+                ))
+            }
             if !primary, let detail = metric.detail, !detail.isEmpty {
                 meta.addArrangedSubview(label("· \(detail)", size: 9, color: Theme.tertiary))
             }
@@ -950,7 +954,7 @@ final class ProviderRowView: NSView {
             messageLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -54).isActive = true
         }
 
-        stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10).isActive = true
+        stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8).isActive = true
 
         separator.wantsLayer = true
         separator.layer?.backgroundColor = Theme.separator.resolvedCGColor()

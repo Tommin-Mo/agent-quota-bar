@@ -368,7 +368,7 @@ final class SettingsWindowController: NSWindowController {
             sidebar.topAnchor.constraint(equalTo: container.topAnchor),
             sidebar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             sidebar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            sidebar.widthAnchor.constraint(equalToConstant: 188),
+            sidebar.widthAnchor.constraint(equalToConstant: 200),
 
             sidebarLine.topAnchor.constraint(equalTo: container.topAnchor),
             sidebarLine.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
@@ -542,18 +542,21 @@ final class SettingsWindowController: NSWindowController {
                                        action: #selector(navTapped(_:)), target: self)
             button.tag = index
             button.translatesAutoresizingMaskIntoConstraints = false
-            button.heightAnchor.constraint(equalToConstant: 34).isActive = true
-            button.widthAnchor.constraint(equalToConstant: 168).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 38).isActive = true
+            button.widthAnchor.constraint(equalToConstant: 184).isActive = true
             nav.addArrangedSubview(button)
             navButtons.append(button)
         }
 
-        let background = label("后台签到 · 已启用", size: 10, weight: .medium, color: Theme.success)
+        let background = label("后台签到已启用", size: 10, weight: .medium, color: Theme.success)
         background.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(background)
-        let version = label(appVersionText, size: 10, color: Theme.tertiary)
-        version.translatesAutoresizingMaskIntoConstraints = false
-        sidebar.addSubview(version)
+        let configButton = NSButton(title: "打开配置文件", target: self, action: #selector(openConfig))
+        configButton.isBordered = false
+        configButton.font = .systemFont(ofSize: 10.5)
+        configButton.contentTintColor = Theme.accent
+        configButton.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(configButton)
 
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 44),
@@ -565,9 +568,9 @@ final class SettingsWindowController: NSWindowController {
             nav.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -14),
 
             background.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 20),
-            background.bottomAnchor.constraint(equalTo: version.topAnchor, constant: -4),
-            version.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 20),
-            version.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -18),
+            background.bottomAnchor.constraint(equalTo: configButton.topAnchor, constant: -5),
+            configButton.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 20),
+            configButton.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -18),
         ])
     }
 
@@ -634,7 +637,7 @@ final class SettingsWindowController: NSWindowController {
         refreshPopup.target = self
         refreshPopup.action = #selector(refreshOptionChanged)
         refreshPopup.translatesAutoresizingMaskIntoConstraints = false
-        refreshPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        refreshPopup.widthAnchor.constraint(equalToConstant: 160).isActive = true
 
         proxyField.font = .systemFont(ofSize: 12)
         proxyField.bezelStyle = .roundedBezel
@@ -643,7 +646,7 @@ final class SettingsWindowController: NSWindowController {
         proxyField.setAccessibilityLabel("系统代理")
         proxyField.delegate = self
         proxyField.translatesAutoresizingMaskIntoConstraints = false
-        proxyField.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        proxyField.widthAnchor.constraint(equalToConstant: 240).isActive = true
 
         loginSwitch.target = self
         loginSwitch.action = #selector(loginSwitchChanged)
@@ -673,7 +676,7 @@ final class SettingsWindowController: NSWindowController {
         appearanceControl.action = #selector(appearanceChanged)
         appearanceControl.setAccessibilityLabel("外观")
         appearanceControl.translatesAutoresizingMaskIntoConstraints = false
-        appearanceControl.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        appearanceControl.widthAnchor.constraint(equalToConstant: 240).isActive = true
 
         checkinSwitch.isOn = checkin.isAutoEnabled
         checkinSwitch.target = self
@@ -873,7 +876,7 @@ final class SettingsWindowController: NSWindowController {
         menuBarModePopup.action = #selector(menuBarModeChanged)
         menuBarModePopup.setAccessibilityLabel("菜单栏显示方式")
         menuBarModePopup.translatesAutoresizingMaskIntoConstraints = false
-        menuBarModePopup.widthAnchor.constraint(equalToConstant: 250).isActive = true
+        menuBarModePopup.widthAnchor.constraint(equalToConstant: 240).isActive = true
 
         fixedProviderPopup.removeAllItems()
         for id in providerOrder {
@@ -887,7 +890,7 @@ final class SettingsWindowController: NSWindowController {
         fixedProviderPopup.action = #selector(fixedProviderSelected)
         fixedProviderPopup.setAccessibilityLabel("固定显示的服务")
         fixedProviderPopup.translatesAutoresizingMaskIntoConstraints = false
-        fixedProviderPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        fixedProviderPopup.widthAnchor.constraint(equalToConstant: 240).isActive = true
 
         scaleSlider.minValue = 0.8
         scaleSlider.maxValue = 1.6
@@ -1320,8 +1323,8 @@ final class SettingsWindowController: NSWindowController {
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 4),
             stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -4),
-            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
         ])
         for row in rows {
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -1451,7 +1454,13 @@ final class SettingsWindowController: NSWindowController {
             self?.manageAccounts(for: id)
         }
         manageAccounts.font = .systemFont(ofSize: 11, weight: .medium)
-        manageAccounts.contentTintColor = Theme.accent
+        manageAccounts.attributedTitle = NSAttributedString(
+            string: "账户管理",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor.linkColor,
+            ]
+        )
         manageAccounts.identifier = NSUserInterfaceItemIdentifier(id)
         manageAccounts.setAccessibilityLabel("管理 \(style.shortName) 账户")
         manageAccounts.toolTip = "添加、编辑、删除或切换账户"
