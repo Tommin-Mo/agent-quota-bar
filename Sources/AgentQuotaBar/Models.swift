@@ -381,9 +381,10 @@ extension QuotaSnapshot {
         let percent = providers
             .filter(\.isUsable)
             .compactMap { provider -> (String, Double)? in
-                guard let value = provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent else {
-                    return nil
-                }
+                let values = provider.metrics
+                    .filter { $0.kind == "percent" }
+                    .compactMap(\.remainingPercent)
+                guard let value = values.min() else { return nil }
                 return (provider.id, value)
             }
             .min(by: { $0.1 < $1.1 })

@@ -319,6 +319,8 @@ final class AccountStore {
     /// 把选中账号凭据写回扁平字段（collector 兼容层）。
     private func mirror(_ credentials: [String: String], for provider: String) {
         for key in Self.credentialKeys(for: provider) {
+            // edition 是 provider selector，不是账号密钥；账号没填时保留当前选择。
+            if key == "edition", credentials[key] == nil { continue }
             config.set("providers.\(provider).\(key)", credentials[key] ?? "")
         }
     }

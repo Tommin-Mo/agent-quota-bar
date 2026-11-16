@@ -95,11 +95,11 @@ final class QuotaPopoverViewController: NSViewController {
         root.layer?.backgroundColor = Theme.background.resolvedCGColor()
         root.frame = NSRect(x: 0, y: 0, width: 380, height: 520)
 
-        titleLabel.stringValue = "额度概览"
-        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.stringValue = "额度"
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
         titleLabel.textColor = NSColor.labelColor.resolvedForAppearance()
 
-        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.font = .systemFont(ofSize: 11)
         subtitleLabel.textColor = Theme.tertiary
         subtitleLabel.lineBreakMode = .byTruncatingTail
 
@@ -144,10 +144,12 @@ final class QuotaPopoverViewController: NSViewController {
         let headerSpacer = NSView()
         headerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let header = NSStackView(views: [titles, headerSpacer, spinner, headerActions])
+        // 刷新状态放在 subtitle；不把空 spinner 留在 header 里，避免静止时出现灰点。
+        let header = NSStackView(views: [titles, headerSpacer, headerActions])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 8
+        header.detachesHiddenViews = true
         header.translatesAutoresizingMaskIntoConstraints = false
 
         // 成本行 + 近 7 天小图：有数据才出现，空状态不占高度。
@@ -308,7 +310,10 @@ final class QuotaPopoverViewController: NSViewController {
         costLabel.setAccessibilityValue(hasCost ? cost! : "无数据")
 
         let resolved = resolvedHistory()
-        let hasHistory = resolved.values.contains { $0 != nil }
+        // 只有 1 天数据时不画一根孤零零的柱子；至少 2 天才构成“趋势”。
+        let hasHistory = resolved.values.compactMap { $0 }.count >= 2
+        // 剩余百分比固定 0–100 域，避免“只有一天/数值很小”被归一化成满格。
+        sparkline.domainMax = resolved.caption.contains("成本") ? nil : 100
         sparkline.values = resolved.values
         historyCaptionLabel.stringValue = resolved.caption
         historyRow.isHidden = !hasHistory
@@ -408,6 +413,16 @@ final class QuotaPopoverViewController: NSViewController {
 
         if isOffline { addOfflineBanner() }
         let ordered = orderedProviders(snapshot)
+        if ordered.isEmpty {
+            let empty = wrappingLabel(
+                "还没有启用服务。打开设置 → 服务，选择要显示的 Agent。",
+                size: 11,
+                color: Theme.secondary,
+                width: 310
+            )
+            rowsStack.addArrangedSubview(empty)
+            empty.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
+        }
         for (index, provider) in ordered.enumerated() {
             let row = ProviderRowView(
                 provider: provider,
@@ -432,7 +447,7 @@ final class QuotaPopoverViewController: NSViewController {
 
         subtitleLabel.stringValue = isOffline
             ? "网络未连接 · 显示 \(timeText(snapshot.updatedDate)) 的数据"
-            : "\(snapshot.usableCount)/\(snapshot.enabledCount) 个服务 · \(timeText(snapshot.updatedDate))"
+            : "\(snapshot.usableCount) 个服务 · \(timeText(snapshot.updatedDate))"
 
         if isOffline {
             footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
@@ -441,7 +456,7 @@ final class QuotaPopoverViewController: NSViewController {
             footerLabel.stringValue = "⚠︎ " + error
             footerLabel.textColor = .systemOrange
         } else {
-            footerLabel.stringValue = "更新于 \(timeText(snapshot.updatedDate))"
+            footerLabel.stringValue = "更新 \(timeText(snapshot.updatedDate))"
             footerLabel.textColor = Theme.tertiary
         }
 
@@ -710,7 +725,7 @@ final class ProviderRowView: NSView {
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let value = label(valueText(provider), size: 20, weight: .semibold, color: valueColor(provider), monospaced: true)
+        let value = label(valueText(provider), size: 21, weight: .semibold, color: valueColor(provider), monospaced: true)
         value.alignment = .right
 
         let valueRow = NSStackView()
@@ -758,15 +773,6 @@ final class ProviderRowView: NSView {
             cost.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
 
-        // 余额/积分卡没有窗口指标，统一成固定 66pt 行高：10 + 46 + 10，
-        // 避免左右内容把行撑出上下不对称的空白。有成本行时改为自动高度。
-        if !hasCostLine,
-           !provider.metrics.contains(where: { $0.kind == "percent" }),
-           provider.status != "error",
-           provider.status != "unconfigured" {
-            heightAnchor.constraint(equalToConstant: 66).isActive = true
-        }
-
         let percentMetrics = provider.metrics.filter { $0.kind == "percent" }
         for metric in percentMetrics.prefix(3) {
             let remaining = metric.remainingPercent ?? 0
@@ -778,7 +784,7 @@ final class ProviderRowView: NSView {
             meta.alignment = .centerY
             let used = metric.usedPercent ?? max(0, 100 - remaining)
             meta.addArrangedSubview(label(
-                "\(metric.label)消耗 \(Int(used.rounded()))%",
+                "\(metric.label) · 已用 \(Int(used.rounded()))%",
                 size: 12,
                 weight: .medium,
                 color: Theme.secondary
@@ -1146,6 +1152,10 @@ final class LogoBadgeView: NSView {
 /// 7 天消耗柱状小图。只负责绘制，数据由 `historyProvider` 注入；
 /// 缺失值画成小点，避免误显示为 0。
 final class HistorySparklineView: NSView {
+    /// nil 表示按数据最大值归一化（成本曲线）；设置后按固定 0...domainMax（剩余百分比）。
+    var domainMax: Double? {
+        didSet { needsDisplay = true }
+    }
     var values: [Double?] = [] {
         didSet {
             needsDisplay = true
@@ -1162,7 +1172,7 @@ final class HistorySparklineView: NSView {
 
         let count = max(values.count, 1)
         guard !values.isEmpty else { return }
-        let maxValue = values.compactMap({ $0 }).max() ?? 0
+        let maxValue = domainMax ?? (values.compactMap({ $0 }).max() ?? 0)
         let gap: CGFloat = 2
         let cellWidth = max(1, (bounds.width - 2 - gap * CGFloat(count - 1)) / CGFloat(count))
         let baseline: CGFloat = 3
@@ -1170,18 +1180,18 @@ final class HistorySparklineView: NSView {
 
         for (index, value) in values.enumerated() {
             let x = 1 + CGFloat(index) * (cellWidth + gap)
-            guard let value, maxValue > 0, value > 0 else {
-                // 缺失值：居中一个小点，和“消耗为 0”区分开。
+            guard let value else {
+                // 缺失值：居中一个小点，和“数值为 0”区分开。
                 Theme.tertiary.withAlphaComponent(0.35).setFill()
                 NSBezierPath(ovalIn: NSRect(x: x + cellWidth / 2 - 1, y: bounds.midY - 1, width: 2, height: 2)).fill()
                 continue
             }
-            let fraction = CGFloat(max(0, min(1, value / maxValue)))
-            let barHeight = max(2, available * fraction)
+            let fraction = maxValue > 0 ? CGFloat(max(0, min(1, value / maxValue))) : 0
+            let barHeight = max(value == 0 ? 1.5 : 2, available * fraction)
             let bar = NSRect(x: x, y: baseline, width: cellWidth, height: barHeight)
             // 最后一天（今天）更醒目。
             let alpha: CGFloat = index == values.count - 1 ? 0.95 : 0.55
-            Theme.accent.withAlphaComponent(alpha).setFill()
+            (value == 0 ? QuotaStyle.dangerColor : Theme.accent).withAlphaComponent(alpha).setFill()
             NSBezierPath(
                 roundedRect: bar,
                 xRadius: min(2, cellWidth / 2),

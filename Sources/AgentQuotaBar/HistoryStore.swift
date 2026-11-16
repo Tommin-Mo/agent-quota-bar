@@ -47,9 +47,11 @@ final class HistoryStore {
             var entry = entries.first { $0.date == today && $0.provider == provider.id }
                 ?? UsageHistoryEntry(date: today, provider: provider.id)
 
-            if let metric = provider.metrics.first(where: { $0.kind == "percent" }) {
-                if let used = metric.usedPercent { entry.usedPercent = used }
-                if let remaining = metric.remainingPercent { entry.remainingPercent = remaining }
+            let percentMetrics = provider.metrics.filter { $0.kind == "percent" }
+            let remainingValues = percentMetrics.compactMap(\.remainingPercent)
+            if let remaining = remainingValues.min() {
+                entry.remainingPercent = remaining
+                entry.usedPercent = max(0, 100 - remaining)
             }
             if let balance = provider.balance { entry.balance = balance }
             if let consumed = provider.consumed { entry.consumed = consumed }

@@ -260,9 +260,22 @@ final class WebLoginWindowController: NSWindowController, WKNavigationDelegate, 
             config.set("providers.opencode.workspaceId", secondary ?? "")
             config.set("providers.opencode.mode", "zen")
         }
-        try? config.save()
-
         let provider = kind == .workbuddy ? "workbuddy" : "opencode"
+        // 自动登录写的是扁平字段；有活动持久账号时同步回账号记录，避免切走再切回时旧值覆盖。
+        let accountStore = AccountStore(config: config)
+        if let active = accountStore.activeAccount(for: provider), !active.isLegacy {
+            var updated = active
+            switch kind {
+            case .workbuddy:
+                updated.credentials["token"] = credential
+                if let secondary, !secondary.isEmpty { updated.credentials["uid"] = secondary }
+            case .opencode:
+                updated.credentials["cookie"] = credential
+                updated.credentials["workspaceId"] = secondary ?? ""
+            }
+            try? accountStore.updateAccount(updated, for: provider)
+        }
+        try? config.save()
         service.verify(provider: provider) { [weak self] result in
             guard let self else { return }
             switch result {

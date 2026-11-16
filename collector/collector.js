@@ -1074,11 +1074,14 @@ function workBuddyAutoCredential() {
 }
 
 function collectWorkBuddy(cfg) {
-  let token = String(cfg.token || process.env.WORKBUDDY_TOKEN || '').trim().replace(/^Bearer\s+/i, '');
+  const forceBrowserCookie = cfg.forceBrowserCookie === true;
+  let token = forceBrowserCookie
+    ? ''
+    : String(cfg.token || process.env.WORKBUDDY_TOKEN || '').trim().replace(/^Bearer\s+/i, '');
   let uid = String(cfg.uid || '').trim();
   let source = 'config';
   // 设置里显式配置的账号优先；只有没有 token 时才用本机 WorkBuddy 自动解密。
-  if (!token) {
+  if (!forceBrowserCookie && !token) {
     const auto = workBuddyAutoCredential();
     if (auto) {
       token = auto.token;
@@ -1086,7 +1089,7 @@ function collectWorkBuddy(cfg) {
       source = 'auto';
     }
   }
-  if (!token) {
+  if (!forceBrowserCookie && !token) {
     const found = discoverWorkBuddyToken();
     if (found) {
       token = found.token;
@@ -1096,7 +1099,7 @@ function collectWorkBuddy(cfg) {
   }
   // token 优先；没有 token 时才尝试 opt-in 的 Chrome Cookie，失败静默回退手动配置。
   let cookie = '';
-  if (!token && chromeCookieImportEnabled(cfg)) {
+  if ((!token || forceBrowserCookie) && chromeCookieImportEnabled(cfg)) {
     const imported = readChromeCookiesForHost('www.workbuddy.cn');
     if (imported.header) {
       cookie = imported.header;
@@ -1611,6 +1614,10 @@ function collectOpenCode(cfg) {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
     });
     if (res.status === 401 || res.status === 403) {
+      if (chromeCookieImportEnabled(cfg)) {
+        const retry = collectOpenCode({ ...cfg, apiKey: '', mode: 'zen' });
+        if (retry.status === 'ok' || retry.status === 'warn') return retry;
+      }
       return failed('opencode', 'OpenCode', 'API Key 无效或已过期');
     }
     if (res.status === 200 && res.json) {
@@ -1634,7 +1641,7 @@ function collectOpenCode(cfg) {
 
   // mode=go 只走 API Key，不读 Chrome，避免无意义地弹钥匙串授权。
   const cookieInfo = mode === 'go' && apiKey ? { header: '', source: 'none' } : resolveOpenCodeCookie(cfg);
-  if (cookieInfo.header && mode !== 'go') {
+  if (cookieInfo.header && (mode !== 'go' || !apiKey)) {
     const headers = { Cookie: cookieInfo.header, Accept: 'application/json' };
     const orgIdCfg = String(cfg.workspaceId || '').trim();
     let orgId = orgIdCfg;

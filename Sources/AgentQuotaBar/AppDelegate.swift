@@ -801,6 +801,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         auto.representedObject = "auto"
         auto.state = mode == "auto" ? .on : .off
         menu.addItem(auto)
+        let merged = NSMenuItem(title: "合并显示（比例最低）", action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
+        merged.target = self
+        merged.representedObject = "merged"
+        merged.state = mode == "merged" ? .on : .off
+        menu.addItem(merged)
         menu.addItem(.separator())
 
         for descriptor in ProviderRegistry.all {
@@ -818,6 +823,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let value = sender.representedObject as? String ?? "auto"
         if value == "auto" {
             service.config.set("menuBarMode", "auto")
+        } else if value == "merged" {
+            service.config.set("menuBarMode", "merged")
         } else {
             service.config.set("menuBarMode", "fixed")
             service.config.set("menuBarProvider", value)
@@ -827,7 +834,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         } catch {
             log("save menu bar provider failed: \(error)")
         }
-        activeProviderID = value == "auto" ? nil : value
+        activeProviderID = (value == "auto" || value == "merged") ? nil : value
         lastUsage.removeAll()
         pendingUsage = nil
         render()

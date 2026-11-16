@@ -80,7 +80,15 @@ final class QuotaService {
             && incomingRelevant.allSatisfy { $0.status == "error" && Self.isNetworkProvider($0) }
 
         if only != nil {
-            // 定向刷新只影响目标行；单个 provider 断网不能把整个面板判成离线。
+            // 定向刷新只影响目标行；若目标本身网络失败，保留上一份快照与离线状态，
+            // 不能用目标错误行伪装成“刚刚更新成功”。
+            if allIncomingNetworkFailed {
+                if snapshot == nil {
+                    isOffline = true
+                    errorMessage = nil
+                }
+                return
+            }
             isOffline = false
             errorMessage = nil
             var providers = incoming.providers

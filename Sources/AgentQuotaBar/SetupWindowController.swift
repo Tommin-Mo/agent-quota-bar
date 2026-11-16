@@ -374,8 +374,26 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         return button
     }
 
+    private func codexAuthPath() -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let store = AccountStore(config: service.config)
+        let active = store.activeAccount(for: "codex")?.credentials ?? [:]
+        let expand = { (raw: String) -> String in
+            if raw == "~" { return home.path }
+            if raw.hasPrefix("~/") { return home.appendingPathComponent(String(raw.dropFirst(2))).path }
+            return raw
+        }
+        if let raw = active["authPath"], !raw.isEmpty {
+            return URL(fileURLWithPath: expand(raw))
+        }
+        if let raw = active["codexHome"], !raw.isEmpty {
+            return URL(fileURLWithPath: expand(raw)).appendingPathComponent("auth.json")
+        }
+        return home.appendingPathComponent(".codex/auth.json")
+    }
+
     private func codexAuthSummary() -> String {
-        let path = NSString(string: "~/.codex/auth.json").expandingTildeInPath
+        let path = codexAuthPath().path
         guard FileManager.default.fileExists(atPath: path),
               let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -383,7 +401,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
               let access = tokens["access_token"] as? String,
               !access.isEmpty
         else {
-            return "登录态：未找到 ~/.codex/auth.json"
+            return "登录态：未找到 \(path)"
         }
         return "登录态：已找到（\(path)）"
     }
@@ -412,9 +430,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
                 return
             }
             let fm = FileManager.default
-            let home = fm.homeDirectoryForCurrentUser
-            let directory = home.appendingPathComponent(".codex", isDirectory: true)
-            let destination = directory.appendingPathComponent("auth.json")
+            let destination = self.codexAuthPath()
+            let directory = destination.deletingLastPathComponent()
             do {
                 try fm.createDirectory(at: directory, withIntermediateDirectories: true)
                 if fm.fileExists(atPath: destination.path) {

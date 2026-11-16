@@ -826,7 +826,7 @@ final class SettingsWindowController: NSWindowController {
         menuBarModePopup.addItem(withTitle: "固定一家")
         menuBarModePopup.lastItem?.representedObject = "fixed"
         if mergedMenuBarModeAvailable || current == "merged" {
-            menuBarModePopup.addItem(withTitle: "合并显示（最紧张）")
+            menuBarModePopup.addItem(withTitle: "合并显示（比例最低）")
             menuBarModePopup.lastItem?.representedObject = "merged"
         }
         if let index = menuBarModePopup.itemArray.firstIndex(where: { ($0.representedObject as? String) == current }) {
@@ -1374,6 +1374,9 @@ final class SettingsWindowController: NSWindowController {
         autoCookie.toolTip = "自动从 Chrome 读取登录 Cookie（仅 OpenCode / WorkBuddy）"
         autoCookie.setAccessibilityLabel("\(style.shortName) 自动从 Chrome 读取 Cookie")
         autoCookie.isHidden = !(id == "opencode" || id == "workbuddy")
+        let autoCookieLabel = label("自动", size: 10, color: Theme.tertiary)
+        autoCookieLabel.isHidden = autoCookie.isHidden
+        autoCookieLabel.toolTip = "仅在没有可用登录态或登录态失效时回退到 Chrome Cookie"
 
         let configure = ClosureButton(title: "配置…") { [weak self] in
             self?.onOpenSetup(id)
