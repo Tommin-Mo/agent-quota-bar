@@ -441,8 +441,8 @@ final class QuotaPopoverViewController: NSViewController {
             empty.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
         }
         for (index, provider) in ordered.enumerated() {
-            let category = Self.category(for: provider)
-            let showsCategory = index == 0 || Self.category(for: ordered[index - 1]) != category
+            let category = provider.category
+            let showsCategory = index == 0 || ordered[index - 1].category != category
             let row = ProviderRowView(
                 provider: provider,
                 todaySpent: UsageTracker.shared.todaySpent(for: provider.id),
@@ -520,8 +520,8 @@ final class QuotaPopoverViewController: NSViewController {
         // 服务顺序可以自定义，但分组顺序固定：订阅额度 → 现金余额 → 积分。
         let categoryRank = ["订阅额度": 0, "现金余额": 1, "积分": 2]
         result.sort {
-            let left = categoryRank[Self.category(for: $0)] ?? 9
-            let right = categoryRank[Self.category(for: $1)] ?? 9
+            let left = categoryRank[$0.category] ?? 9
+            let right = categoryRank[$1.category] ?? 9
             return left < right
         }
         return result
@@ -753,21 +753,16 @@ final class ProviderRowView: NSView {
         statusDot.translatesAutoresizingMaskIntoConstraints = false
         statusDot.widthAnchor.constraint(equalToConstant: 6).isActive = true
         statusDot.heightAnchor.constraint(equalToConstant: 6).isActive = true
-        let statusColor: NSColor
-        switch provider.status {
-        case "ok", "warn": statusColor = QuotaStyle.healthyColor
-        case "unconfigured": statusColor = .systemOrange
-        case "error": statusColor = .systemRed
-        default: statusColor = Theme.tertiary
-        }
-        statusDot.color = statusColor
-        statusDot.toolTip = provider.status == "ok" ? "已连接" : (provider.error ?? provider.detail ?? provider.status)
+        statusDot.color = provider.connection.color
+        statusDot.toolTip = provider.connection == .online
+            ? "已连接"
+            : (provider.error ?? provider.detail ?? provider.connection.title)
         let nameRow = NSStackView(views: [name, statusDot])
         nameRow.orientation = .horizontal
         nameRow.spacing = 5
         nameRow.alignment = .centerY
-        if let plan = provider.plan, !plan.isEmpty {
-            nameRow.addArrangedSubview(label(Self.displayPlan(plan), size: 10, color: Theme.tertiary))
+        if let plan = provider.displayPlan {
+            nameRow.addArrangedSubview(label(plan, size: 10, color: Theme.tertiary))
         }
         if provider.id == "trae" || provider.id == "workbuddy" {
             if checkinDone {
@@ -808,7 +803,7 @@ final class ProviderRowView: NSView {
             nameRow.addArrangedSubview(label("待配置", size: 10, weight: .medium, color: .systemOrange))
         }
 
-        let subText = subtitle(for: provider)
+        let subText = provider.displaySubtitle
         let info = NSStackView(views: subText.isEmpty ? [nameRow] : [nameRow, label(subText, size: 12, color: Theme.tertiary)])
         info.orientation = .vertical
         info.alignment = .leading
@@ -818,7 +813,7 @@ final class ProviderRowView: NSView {
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let value = label(valueText(provider), size: 22, weight: .semibold, color: valueColor(provider), monospaced: true)
+        let value = label(provider.displayPrimaryValue, size: 22, weight: .semibold, color: valueColor(provider), monospaced: true)
         value.alignment = .right
 
         let valueRow = NSStackView()
@@ -826,8 +821,8 @@ final class ProviderRowView: NSView {
         valueRow.alignment = .firstBaseline
         valueRow.spacing = 4
         valueRow.addArrangedSubview(value)
-        if provider.id == "trae" || provider.id == "workbuddy" {
-            valueRow.addArrangedSubview(label("积分", size: 11, color: Theme.tertiary))
+        if let unit = provider.unitSuffix {
+            valueRow.addArrangedSubview(label(unit, size: 11, color: Theme.tertiary))
         }
         let valueStack = NSStackView()
         valueStack.orientation = .vertical
@@ -1054,34 +1049,6 @@ final class ProviderRowView: NSView {
         provider.metrics.contains { ($0.remainingPercent ?? 100) <= 20 }
     }
 
-    private func subtitle(for provider: ProviderStatus) -> String {
-        switch provider.status {
-        case "ok", "warn":
-            if provider.id == "codex" {
-                if let raw = provider.subscriptionUntil,
-                   let date = ISO8601DateFormatter.flexible.date(from: raw)
-                    ?? ISO8601DateFormatter().date(from: raw) {
-                    let formatter = DateFormatter()
-                    formatter.locale = Locale(identifier: "zh_CN")
-                    formatter.dateFormat = "M/d"
-                    let renew = provider.subscriptionWillRenew == true ? " · 自动续费" : ""
-                    return "ChatGPT 订阅 · \(formatter.string(from: date)) 到期\(renew)"
-                }
-                return "ChatGPT 订阅"
-            }
-            if provider.id == "deepseek" { return "API 余额（按量计费）" }
-            if provider.id == "trae" || provider.id == "workbuddy" { return "" }
-            let detail = provider.detail ?? "已连接"
-            return detail.replacingOccurrences(of: " 订阅额度", with: "")
-        case "error":
-            return errorSummary(for: provider)
-        case "unconfigured":
-            return "还未连接"
-        default:
-            return ""
-        }
-    }
-
     private func errorSummary(for provider: ProviderStatus) -> String {
         ProviderErrorText.summary(provider.error)
     }
@@ -1090,27 +1057,10 @@ final class ProviderRowView: NSView {
         ProviderErrorText.hint(for: errorSummary(for: provider))
     }
 
-    private func valueText(_ provider: ProviderStatus) -> String {
-        if let percent = provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent {
-            return "\(Int(percent.rounded()))%"
-        }
-        if let credit = provider.metrics.first(where: { $0.kind == "credit" }) {
-            if let text = credit.headlineValue, (credit.currency ?? "").isEmpty,
-               let number = Int(text) {
-                return NumberFormatter.grouped.string(from: NSNumber(value: number)) ?? text
-            }
-            return credit.headlineValue ?? "—"
-        }
-        if let text = provider.metrics.first(where: { $0.kind == "text" }) {
-            return text.headlineValue ?? "—"
-        }
-        return "—"
-    }
-
     private func valueCaption(_ provider: ProviderStatus, todaySpent: Double?) -> String? {
         guard provider.metrics.contains(where: { $0.kind == "credit" }),
               let spent = todaySpent, spent > 0.0001 else { return nil }
-        if provider.id == "deepseek" {
+        if case .currency = provider.unit {
             return String(format: "今日 -¥%.2f", spent)
         }
         return "今日 -\(Int(spent.rounded()))"
@@ -1118,8 +1068,8 @@ final class ProviderRowView: NSView {
 
     private func valueColor(_ provider: ProviderStatus) -> NSColor {
         if provider.status == "error" { return .labelColor }
-        if let percent = provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent {
-            return QuotaSeverity.from(remaining: percent).color
+        if provider.metrics.contains(where: { $0.kind == "percent" }) {
+            return provider.health.color
         }
         if let creditColor = QuotaStyle.creditColor(for: provider) {
             return creditColor

@@ -1,7 +1,9 @@
 import AppKit
 
 private var appVersionText: String {
-    "v" + ((Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.4")
+    let short = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.4"
+    let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "?"
+    return "v\(short) · build \(build)"
 }
 
 /// 玻璃面板：NSVisualEffectView + 高光边，接近 Liquid Glass 的层次。
