@@ -70,6 +70,8 @@ final class ScrubValueField: NSView, NSTextFieldDelegate {
     override var mouseDownCanMoveWindow: Bool { false }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         startX = event.locationInWindow.x
         startValue = value
         moved = false
@@ -181,6 +183,8 @@ final class WakeSlider: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         updateValue(at: event)
     }
 
@@ -425,6 +429,8 @@ final class GlideSelect: NSControl {
     override var mouseDownCanMoveWindow: Bool { false }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         guard isEnabled, !items.isEmpty else { return }
         showMenu()
     }

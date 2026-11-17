@@ -945,6 +945,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.activate(ignoringOtherApps: true)
         settingsController?.window?.makeKey()
         settingsController?.window?.orderFrontRegardless()
+        for delay in [0.15, 0.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let window = self?.settingsController?.window else { return }
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                window.makeKey()
+            }
+        }
         if wasAccessory, let settingsWindow = settingsController?.window {
             NotificationCenter.default.addObserver(
                 forName: NSWindow.willCloseNotification,
