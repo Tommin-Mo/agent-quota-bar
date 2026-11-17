@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var lastOpenCodeSession: Date?
     private let switchCooldown: TimeInterval = 10
     private var didPopoverSnapshot = false
+    private var didDebugPopover = false
     private var didStatusSnapshot = false
     private var didIconPreview = false
     private var loginPreview: WebLoginWindowController?
@@ -531,7 +532,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self?.writeSnapshot(of: button, to: path)
                 }
             }
-            if env["AQB_SHOW_POPOVER"] == "1" {
+            if env["AQB_SHOW_POPOVER"] == "1", !didDebugPopover {
+                didDebugPopover = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                     self?.showPopover()
                 }

@@ -325,7 +325,7 @@ final class QuotaPopoverViewController: NSViewController {
         sparkline.domainMax = resolved.caption.contains("成本") ? nil : 100
         sparkline.values = actual
         historyCaptionLabel.stringValue = resolved.caption
-        historyRow.isHidden = !hasHistory
+        historyRow.isHidden = true
     }
 
     /// 优先用外部注入的历史；未注入时先用 HistoryStore 的额度历史，再退回
@@ -465,7 +465,7 @@ final class QuotaPopoverViewController: NSViewController {
 
         let subtitle = isOffline ? "网络未连接 · 显示上次数据" : (isRefreshing ? "正在刷新…" : "")
         subtitleLabel.stringValue = subtitle
-        subtitleLabel.isHidden = subtitle.isEmpty
+        subtitleLabel.isHidden = true
 
         if isOffline {
             footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
