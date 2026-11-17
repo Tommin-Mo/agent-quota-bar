@@ -662,14 +662,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func frontmostProviderChanged(_ providerID: String?) {
-        guard service.config.string("menuBarMode", default: "auto") == "auto",
-              let providerID,
-              let snapshot = service.snapshot,
-              snapshot.provider(withID: providerID) != nil else { return }
-        activeProviderID = providerID
-        pendingUsage = nil
-        lastSwitchAt = Date()
-        render()
+        // 前台窗口不是用量。打开 WorkBuddy 不代表在用 WorkBuddy 的额度；
+        // 菜单栏只跟随真实额度差值 / 会话活动，前台应用在这里不再改 activeProviderID。
+        _ = providerID
     }
 
     private func updateActiveProvider(snapshot: QuotaSnapshot, mode: String) {
@@ -715,8 +710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
 
-        // 前台 App 是最强的“最近使用”信号；有它时不要让额度差值把图标抢走。
-        let frontmostProvider = mode == "auto" ? frontmostMonitor?.currentProvider : nil
+        // 前台 App 不再作为自动切换信号；看真实额度变化和会话活动。
 
         // OpenCode 本地真正创建/更新会话时，即使窗口不在前台也能补一次。
         if let sessionDate = OpenCodeActivity.latestSessionDate() {
@@ -735,14 +729,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
 
-        if let frontmostProvider,
-           snapshot.provider(withID: frontmostProvider) != nil {
-            activeProviderID = frontmostProvider
-            pendingUsage = nil
-        } else if mode == "auto", let pendingUsage,
+        if mode == "auto", let pendingUsage,
            now.timeIntervalSince(lastSwitchAt) >= switchCooldown {
             // 冷却期间只暂存，不丢；到点再切，切完清空，避免旧事件反复触发。
             activeProviderID = pendingUsage.id
+            service.config.set("lastActiveProvider", pendingUsage.id)
+            try? service.config.save()
             lastSwitchAt = now
             self.pendingUsage = nil
         }
@@ -751,6 +743,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let configured = service.config.string("menuBarProvider", default: "auto")
             if configured != "auto", snapshot.provider(withID: configured) != nil {
                 activeProviderID = configured
+            } else if let last = Optional(service.config.string("lastActiveProvider")),
+                      !last.isEmpty,
+                      snapshot.provider(withID: last) != nil {
+                activeProviderID = last
             } else {
                 activeProviderID = snapshot.worstProviderID()
             }
