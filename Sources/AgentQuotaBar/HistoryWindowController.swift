@@ -26,7 +26,7 @@ final class HistoryWindowController: NSWindowController {
         return f
     }()
 
-    init(providerID: String) {
+    init(providerID: String = "all") {
         self.providerID = providerID
         var cal = Calendar(identifier: .gregorian)
         cal.firstWeekday = 2 // 周一开头
@@ -170,15 +170,19 @@ final class HistoryWindowController: NSWindowController {
 
     private func populateProviders() {
         providerPopup.removeAllItems()
+        providerPopup.addItem(withTitle: "整体")
+        providerPopup.lastItem?.representedObject = "all"
         for id in ProviderRegistry.ids {
             let style = ProviderStyles.style(for: id)
             providerPopup.addItem(withTitle: style.shortName)
             providerPopup.lastItem?.representedObject = id
         }
-        if let index = ProviderRegistry.ids.firstIndex(of: providerID) {
+        let ids = ["all"] + ProviderRegistry.ids
+        if let index = ids.firstIndex(of: providerID) {
             providerPopup.selectItem(at: index)
-        } else if let last = providerPopup.lastItem {
-            providerID = last.representedObject as? String ?? providerID
+        } else {
+            providerID = "all"
+            providerPopup.selectItem(at: 0)
         }
     }
 
@@ -205,20 +209,39 @@ final class HistoryWindowController: NSWindowController {
         monthLabel.stringValue = Self.monthFormatter.string(from: monthDate)
         monthLabel.textColor = Theme.secondary
 
-        let entries = HistoryStore.shared.entries(provider: providerID, days: 62, now: now)
-        let byDate = Dictionary(entries.map { ($0.date, $0) }, uniquingKeysWith: { first, _ in first })
-        let scores = entries.map { score(for: $0) }
-        let maxScore = max(1, scores.max() ?? 0)
-        let activeDays = scores.filter { $0 > 0 }.count
-        let streak = currentStreak(entries: entries, now: now)
+        let firstOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: monthDate))!
+        let range = calendar.range(of: .day, in: .month, for: monthDate) ?? 1..<2
+        let monthPrefix = Self.monthFormatter.string(from: monthDate)
+        let monthEntries = HistoryStore.shared.entries(provider: providerID == "all" ? "codex" : providerID,
+                                                       days: 62, now: now)
+        let ids = providerID == "all" ? ProviderRegistry.ids : [providerID]
+        var entriesByProvider: [String: [UsageHistoryEntry]] = [:]
+        var maxByProvider: [String: Double] = [:]
+        for id in ids {
+            let list = providerID == "all"
+                ? HistoryStore.shared.entries(provider: id, days: 62, now: now)
+                : monthEntries
+            let monthList = list.filter { $0.date.hasPrefix(Self.dateFormatter.string(from: firstOfMonth).prefix(7)) }
+            entriesByProvider[id] = monthList
+            maxByProvider[id] = max(1, monthList.map { score(for: $0) }.max() ?? 0)
+        }
 
-        let providerName = ProviderStyles.style(for: providerID).shortName
-        summaryLabel.stringValue = "\(providerName) · 本月活跃 \(activeDays) 天 · 连续使用 \(streak) 天"
+        let allDates = Set(entriesByProvider.values.flatMap { $0.map(\.date) })
+        let activeDays = allDates.filter { date in
+            entriesByProvider.values.contains { list in
+                list.contains { $0.date == date && score(for: $0) > 0 }
+            }
+        }.count
+        let streak = currentStreak(activeDates: allDates.filter { date in
+            entriesByProvider.values.contains { list in
+                list.contains { $0.date == date && score(for: $0) > 0 }
+            }
+        }, now: now)
+        let providerName = providerID == "all" ? "全部 Agent" : ProviderStyles.style(for: providerID).shortName
+        summaryLabel.stringValue = "\(providerName) · 活跃 \(activeDays) 天 · 连续使用 \(streak) 天"
         summaryLabel.textColor = Theme.secondary
 
         calendarStack.arrangedSubviews.forEach { calendarStack.removeArrangedSubview($0); $0.removeFromSuperview() }
-        let firstOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: monthDate))!
-        let range = calendar.range(of: .day, in: .month, for: monthDate) ?? 1..<2
         let firstWeekday = calendar.component(.weekday, from: firstOfMonth)
         let leading = (firstWeekday - calendar.firstWeekday + 7) % 7
 
@@ -229,16 +252,24 @@ final class HistoryWindowController: NSWindowController {
         for day in range {
             let date = calendar.date(byAdding: .day, value: day - 1, to: firstOfMonth)!
             let key = Self.dateFormatter.string(from: date)
-            let entry = byDate[key]
-            let raw = entry.map { score(for: $0) } ?? 0
-            let level: UsageLevel
-            if raw <= 0 {
-                level = .none
-            } else {
-                let ratio = raw / maxScore
-                level = ratio < 0.34 ? .light : (ratio < 0.67 ? .medium : .dark)
+            var level: UsageLevel = .none
+            var activeNames: [String] = []
+            var detail: String?
+            for id in ids {
+                guard let entry = entriesByProvider[id]?.first(where: { $0.date == key }) else { continue }
+                let raw = score(for: entry)
+                guard raw > 0 else { continue }
+                activeNames.append(ProviderStyles.style(for: id).shortName)
+                if detail == nil { detail = detailText(for: entry) }
+                let ratio = raw / maxByProvider[id, default: 1]
+                let itemLevel: UsageLevel = ratio < 0.34 ? .light : (ratio < 0.67 ? .medium : .dark)
+                if itemLevel.rank > level.rank { level = itemLevel }
             }
-            let tip = entry.map { "\(key) · \(level.title) · \(detailText(for: $0))" }
+            if activeNames.count >= 2 { level = level.bumped }
+            let nameText = activeNames.prefix(3).joined(separator: "、")
+            let tip: String? = activeNames.isEmpty
+                ? nil
+                : "\(key) · \(level.title) · \(nameText)\(detail.map { " · \($0)" } ?? "")"
             cells.append(HistoryDayCell(day: day, level: level, tooltip: tip, isToday: calendar.isDateInToday(date)))
         }
         while cells.count % 7 != 0 { cells.append(HistoryDayCell(day: nil, level: .none, tooltip: nil)) }
@@ -274,8 +305,8 @@ final class HistoryWindowController: NSWindowController {
         return "有记录"
     }
 
-    private func currentStreak(entries: [UsageHistoryEntry], now: Date) -> Int {
-        let active = Set(entries.filter { score(for: $0) > 0 }.map(\.date))
+    private func currentStreak(activeDates: Set<String>, now: Date) -> Int {
+        let active = activeDates
         var day = now
         if !active.contains(Self.dateFormatter.string(from: day)),
            let yesterday = calendar.date(byAdding: .day, value: -1, to: day) {
@@ -295,6 +326,12 @@ final class HistoryWindowController: NSWindowController {
 
 private enum UsageLevel {
     case none, light, medium, dark
+    var rank: Int {
+        switch self { case .none: return 0; case .light: return 1; case .medium: return 2; case .dark: return 3 }
+    }
+    var bumped: UsageLevel {
+        switch self { case .none, .light: return .medium; case .medium: return .dark; case .dark: return .dark }
+    }
     var title: String {
         switch self {
         case .none: return "未使用"

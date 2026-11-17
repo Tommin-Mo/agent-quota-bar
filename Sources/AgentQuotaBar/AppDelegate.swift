@@ -220,12 +220,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     /// 外观切换后立刻刷新一次，再在 AppKit 真正消化外观后补两次。
     private func openHistory() {
-        let id = activeProviderID
-            ?? service.snapshot?.worstProviderID()
-            ?? ProviderRegistry.ids.first
-            ?? "codex"
         if historyController == nil {
-            historyController = HistoryWindowController(providerID: id)
+            // 历史默认是整体额度监控；具体 Agent 在窗口内选择。
+            historyController = HistoryWindowController(providerID: "all")
         }
         historyController?.showWindow(nil)
         historyController?.window?.makeKeyAndOrderFront(nil)
