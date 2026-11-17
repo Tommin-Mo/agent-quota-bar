@@ -974,8 +974,13 @@ final class AvatarView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         widthAnchor.constraint(equalToConstant: size).isActive = true
         heightAnchor.constraint(equalToConstant: size).isActive = true
-        if let provider, let logo = ProviderLogo.image(for: provider, size: size * 0.92, color: Theme.text) {
+        if let provider, let logo = ProviderLogo.image(for: provider, size: size * 0.92, color: .black) {
+            // 用模板图 + labelColor，让 AppKit 自己跟随明暗切换；
+            // 不再把动态色渲染进图片，避免深色切浅色后留下白色 logo。
+            logo.isTemplate = true
             let view = NSImageView(image: logo)
+            view.imageScaling = .scaleProportionallyUpOrDown
+            view.contentTintColor = .labelColor
             self.logoView = view
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
@@ -1008,11 +1013,7 @@ final class AvatarView: NSView {
     }
 
     func refreshInk() {
-        guard let provider = avatarProvider else { return }
-        let appearance = window?.effectiveAppearance ?? effectiveAppearance
-        let ink = Theme.text.resolvedForAppearance(appearance)
-        guard let logo = ProviderLogo.image(for: provider, size: avatarSize * 0.92, color: ink) else { return }
-        logoView?.image = logo
+        logoView?.contentTintColor = .labelColor
         logoView?.needsDisplay = true
     }
 }

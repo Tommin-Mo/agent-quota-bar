@@ -535,7 +535,7 @@ final class QuotaPopoverViewController: NSViewController {
             insightsHeight += historyRow.fittingSize.height
         }
         // 顶部 14 + header 约 31 + 间距 12 + rows + 间距 8 + footer 约 16 + 底部 10
-        let height = min(840, max(160, rowsHeight + 92 + insightsHeight))
+        let height = min(720, max(160, rowsHeight + 92 + insightsHeight))
         let size = NSSize(width: 380, height: height)
         preferredContentSize = size
         view.invalidateIntrinsicContentSize()
