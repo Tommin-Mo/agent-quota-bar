@@ -586,21 +586,13 @@ final class SettingsWindowController: NSWindowController {
         hintLabel.font = .systemFont(ofSize: 10.5)
         hintLabel.textColor = Theme.secondary
         hintLabel.setAccessibilityLabel("保存状态")
-        hintLabel.toolTip = "修改后需点击右侧「保存」；部分外观/开关会即时生效"
-
-        let save = AccentButton(title: "保存", target: self, action: #selector(save))
-        saveButton = save
-        save.isBordered = false
-        save.font = .systemFont(ofSize: 13, weight: .semibold)
-        save.keyEquivalent = "\r"
-        save.translatesAutoresizingMaskIntoConstraints = false
-        save.widthAnchor.constraint(equalToConstant: 104).isActive = true
-        save.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        hintLabel.toolTip = "设置会即时保存；不需要手动点保存"
+        hintLabel.stringValue = "更改会自动保存"
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let row = NSStackView(views: [openConfig, spacer, hintLabel, save])
+        let row = NSStackView(views: [openConfig, spacer, hintLabel])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 12
@@ -1776,7 +1768,7 @@ final class SettingsWindowController: NSWindowController {
         let isFixed = (menuBarModePopup.selectedItem?.representedObject as? String) == "fixed"
         fixedProviderPopup.isEnabled = true
         fixedProviderPopup.alphaValue = isFixed ? 1 : 0.82
-        markDirty()
+        saveGeneralSettings()
     }
 
     @objc private func fixedProviderSelected() {
@@ -1788,14 +1780,26 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func refreshOptionChanged() {
-        markDirty()
+        saveGeneralSettings()
     }
 
-    private func markDirty() {
+    private func saveGeneralSettings() {
         guard !suppressDirty else { return }
-        hintLabel.stringValue = "有未保存修改"
-        hintLabel.textColor = .systemOrange
-        saveButton?.title = "保存 *"
+        let config = service.config
+        config.set("refreshSeconds", refreshPopup.selectedItem?.representedObject as? Int ?? 300)
+        let proxy = proxyField.stringValue.trimmingCharacters(in: .whitespaces)
+        config.set("proxy", proxy.isEmpty ? "auto" : proxy)
+        config.set("menuBarMode", menuBarModePopup.selectedItem?.representedObject as? String ?? "auto")
+        config.set("menuBarProvider", fixedProviderPopup.selectedItem?.representedObject as? String ?? "codex")
+        do {
+            try config.save()
+            hintLabel.stringValue = "已自动保存"
+            hintLabel.textColor = Theme.secondary
+            onSaved()
+        } catch {
+            hintLabel.stringValue = "保存失败：\(error.localizedDescription)"
+            hintLabel.textColor = .systemRed
+        }
     }
 
     @objc private func loginSwitchChanged() {
@@ -1902,9 +1906,9 @@ final class SettingsWindowController: NSWindowController {
 }
 
 extension SettingsWindowController: NSTextFieldDelegate {
-    func controlTextDidChange(_ obj: Notification) {
+    func controlTextDidEndEditing(_ obj: Notification) {
         guard let field = obj.object as? NSTextField, field === proxyField else { return }
-        markDirty()
+        saveGeneralSettings()
     }
 }
 
