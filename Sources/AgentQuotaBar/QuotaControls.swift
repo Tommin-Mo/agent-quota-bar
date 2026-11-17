@@ -556,17 +556,6 @@ private final class GlideMenuRow: NSView {
 
 /// 设置页输入框：去掉系统蓝色 focus ring，用品牌色细边框表示焦点。
 /// 设置页输入框：去掉系统蓝色 focus ring，用品牌色细边框表示焦点。
-private final class QuotaTextFieldCell: NSTextFieldCell {
-    override func drawingRect(forBounds rect: NSRect) -> NSRect {
-        var r = super.drawingRect(forBounds: rect)
-        r.origin.x += 8
-        r.size.width -= 16
-        r.origin.y += 5
-        r.size.height -= 10
-        return r
-    }
-}
-
 final class QuotaTextField: NSTextField {
     override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
 
@@ -576,20 +565,15 @@ final class QuotaTextField: NSTextField {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        isBordered = true
-        bezelStyle = .roundedBezel
-        controlSize = .large
-        focusRingType = .none
-        font = .systemFont(ofSize: 12)
-        isEditable = true
-        isSelectable = true
-        isEnabled = true
-        cell?.isEditable = true
-        cell?.isSelectable = true
+        configureField()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        configureField()
+    }
+
+    private func configureField() {
         isBordered = true
         bezelStyle = .roundedBezel
         controlSize = .large
@@ -598,9 +582,38 @@ final class QuotaTextField: NSTextField {
         isEditable = true
         isSelectable = true
         isEnabled = true
-        cell?.isEditable = true
-        cell?.isSelectable = true
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        layer?.borderWidth = 1
+        layer?.borderColor = Theme.separator.withAlphaComponent(0.55).resolvedForAppearance().cgColor
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        super.mouseDown(with: event)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        layer?.borderColor = Theme.accent.resolvedForAppearance().cgColor
+        layer?.borderWidth = 1.5
+        return ok
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        layer?.borderColor = Theme.separator.withAlphaComponent(0.55).resolvedForAppearance().cgColor
+        layer?.borderWidth = 1
+        return ok
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        layer?.borderColor = Theme.separator.withAlphaComponent(0.55).resolvedForAppearance().cgColor
+    }
 }

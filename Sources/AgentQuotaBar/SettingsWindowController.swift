@@ -653,7 +653,7 @@ final class SettingsWindowController: NSWindowController {
         proxyField.setAccessibilityLabel("系统代理")
         proxyField.delegate = self
         proxyField.translatesAutoresizingMaskIntoConstraints = false
-        proxyField.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        proxyField.widthAnchor.constraint(equalToConstant: 160).isActive = true
 
         loginSwitch.target = self
         loginSwitch.action = #selector(loginSwitchChanged)
