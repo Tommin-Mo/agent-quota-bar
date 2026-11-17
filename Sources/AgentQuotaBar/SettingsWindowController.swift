@@ -1330,6 +1330,9 @@ final class SettingsWindowController: NSWindowController {
         top.alignment = .centerY
         top.spacing = 12
         top.translatesAutoresizingMaskIntoConstraints = false
+        // NSStackView 会按 alignment rect 分配，部分自定义控件会留下奇怪的右侧缩进；
+        // 这里把控件真实 frame 的 trailing 锁到行尾，保证所有控件右边缘一致。
+        control.trailingAnchor.constraint(equalTo: top.trailingAnchor).isActive = true
 
         guard let caption else {
             top.heightAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true

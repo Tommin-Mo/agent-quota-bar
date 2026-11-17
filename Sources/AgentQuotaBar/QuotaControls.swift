@@ -67,6 +67,8 @@ final class ScrubValueField: NSView, NSTextFieldDelegate {
         addCursorRect(bounds, cursor: .resizeLeftRight)
     }
 
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func mouseDown(with event: NSEvent) {
         startX = event.locationInWindow.x
         startValue = value
@@ -175,6 +177,8 @@ final class WakeSlider: NSView {
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .pointingHand)
     }
+
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func mouseDown(with event: NSEvent) {
         updateValue(at: event)
@@ -350,6 +354,7 @@ final class GlideSelect: NSControl {
     var bezelStyle: NSButton.BezelStyle = .rounded
 
     override var intrinsicContentSize: NSSize { NSSize(width: 96, height: 30) }
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -416,6 +421,8 @@ final class GlideSelect: NSControl {
             tinted.draw(in: rect)
         }
     }
+
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func mouseDown(with event: NSEvent) {
         guard isEnabled, !items.isEmpty else { return }
@@ -542,6 +549,7 @@ private final class GlideMenuRow: NSView {
 }
 
 /// 设置页输入框：去掉系统蓝色 focus ring，用品牌色细边框表示焦点。
+/// 设置页输入框：去掉系统蓝色 focus ring，用品牌色细边框表示焦点。
 private final class QuotaTextFieldCell: NSTextFieldCell {
     override func drawingRect(forBounds rect: NSRect) -> NSRect {
         var r = super.drawingRect(forBounds: rect)
@@ -554,53 +562,39 @@ private final class QuotaTextFieldCell: NSTextFieldCell {
 }
 
 final class QuotaTextField: NSTextField {
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
+
     override var intrinsicContentSize: NSSize {
         NSSize(width: super.intrinsicContentSize.width, height: 30)
     }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        isBordered = false
-        drawsBackground = false
+        isBordered = true
+        bezelStyle = .roundedBezel
+        controlSize = .large
         focusRingType = .none
-        wantsLayer = true
         font = .systemFont(ofSize: 12)
-        cell = QuotaTextFieldCell()
+        isEditable = true
+        isSelectable = true
+        isEnabled = true
+        cell?.isEditable = true
+        cell?.isSelectable = true
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        isBordered = false
-        drawsBackground = false
+        isBordered = true
+        bezelStyle = .roundedBezel
+        controlSize = .large
         focusRingType = .none
-        wantsLayer = true
-        cell = QuotaTextFieldCell()
+        font = .systemFont(ofSize: 12)
+        isEditable = true
+        isSelectable = true
+        isEnabled = true
+        cell?.isEditable = true
+        cell?.isSelectable = true
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 7, yRadius: 7)
-        Theme.surface.resolvedForAppearance().setFill()
-        path.fill()
-        let focused = window?.firstResponder === currentEditor()
-        let color = focused ? Theme.accent : Theme.separator.withAlphaComponent(0.55)
-        color.resolvedForAppearance().setStroke()
-        path.lineWidth = focused ? 1.5 : 1
-        path.stroke()
-        super.draw(dirtyRect)
-    }
-
-    override func becomeFirstResponder() -> Bool {
-        needsDisplay = true
-        return super.becomeFirstResponder()
-    }
-
-    override func resignFirstResponder() -> Bool {
-        needsDisplay = true
-        return super.resignFirstResponder()
-    }
-
-    override func textDidEndEditing(_ notification: Notification) {
-        super.textDidEndEditing(notification)
-        needsDisplay = true
-    }
+    override var mouseDownCanMoveWindow: Bool { false }
 }

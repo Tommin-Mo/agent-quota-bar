@@ -936,8 +936,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             settingsController?.mergedMenuBarModeAvailable = true
         }
         settingsController?.showWindow(nil)
+        // LSUIElement 的 accessory app 在部分 macOS 版本上无法仅靠 activate
+        // 获得键盘焦点；临时进入 regular，等窗口成为 key 后再退回菜单栏模式。
+        let wasAccessory = NSApp.activationPolicy() == .accessory
+        if wasAccessory { NSApp.setActivationPolicy(.regular) }
         settingsController?.window?.makeKeyAndOrderFront(nil)
+        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         NSApp.activate(ignoringOtherApps: true)
+        settingsController?.window?.makeKey()
+        settingsController?.window?.orderFrontRegardless()
+        _ = wasAccessory
     }
 
     func openSetup(provider: String) {
