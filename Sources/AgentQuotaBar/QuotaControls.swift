@@ -194,3 +194,142 @@ final class WakeSlider: NSView {
         }
     }
 }
+
+/// 自定义下拉触发器：去掉系统蓝色 bezel，保留原生菜单行为。
+final class GlidePopUpButton: NSPopUpButton {
+    private let chevron = PassthroughImageView()
+    private let border = PopupBorderView()
+
+    override init(frame buttonFrame: NSRect, pullsDown flag: Bool) {
+        super.init(frame: buttonFrame, pullsDown: flag)
+        style()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        style()
+    }
+
+    private func style() {
+        // 原生 bezel 先保证可点击区域的边界可见；自定义 chevron 只作为辅助。
+        isBordered = true
+        bezelStyle = .rounded
+        focusRingType = .none
+        controlSize = .large
+        wantsLayer = true
+        font = .systemFont(ofSize: 12, weight: .medium)
+        chevron.isHidden = true
+        chevron.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold))
+        chevron.contentTintColor = Theme.secondary
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(chevron)
+        border.isHidden = true
+        border.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(border)
+        NSLayoutConstraint.activate([
+            chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
+            chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 12),
+            chevron.heightAnchor.constraint(equalToConstant: 12),
+            border.topAnchor.constraint(equalTo: topAnchor),
+            border.leadingAnchor.constraint(equalTo: leadingAnchor),
+            border.trailingAnchor.constraint(equalTo: trailingAnchor),
+            border.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        applyColors()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyColors()
+    }
+
+    private func applyColors() {
+        layer?.cornerRadius = 7
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = Theme.surface.resolvedForAppearance().cgColor
+        layer?.borderWidth = 0
+        chevron.contentTintColor = Theme.secondary.resolvedForAppearance()
+        chevron.needsDisplay = true
+        border.needsDisplay = true
+    }
+}
+
+final class PopupBorderView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 7, yRadius: 7)
+        Theme.separator.withAlphaComponent(0.5).resolvedForAppearance().setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
+final class PassthroughImageView: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Status Mark：环 → 进度弧 → 勾 / 断环。用于权限与连接状态。
+final class StatusMarkView: NSView {
+    enum State { case idle, authorized, denied, working }
+
+    var state: State = .idle {
+        didSet { needsDisplay = true; setAccessibilityValue(accessibilityText) }
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 14, height: 14) }
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel("状态")
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 1, dy: 1)
+        let color: NSColor
+        switch state {
+        case .idle: color = Theme.tertiary
+        case .authorized: color = Theme.success
+        case .denied: color = Theme.danger
+        case .working: color = Theme.accent
+        }
+        color.setStroke()
+        let ring = NSBezierPath(ovalIn: rect)
+        ring.lineWidth = 1.5
+        ring.stroke()
+
+        if state == .authorized {
+            let check = NSBezierPath()
+            check.lineWidth = 1.7
+            check.lineCapStyle = .round
+            check.move(to: NSPoint(x: rect.minX + 3.2, y: rect.midY))
+            check.line(to: NSPoint(x: rect.midX - 0.5, y: rect.minY + 3.2))
+            check.line(to: NSPoint(x: rect.maxX - 2.8, y: rect.maxY - 3.8))
+            check.stroke()
+        } else if state == .denied {
+            let x = NSBezierPath()
+            x.lineWidth = 1.7
+            x.lineCapStyle = .round
+            x.move(to: NSPoint(x: rect.minX + 3.7, y: rect.minY + 3.7))
+            x.line(to: NSPoint(x: rect.maxX - 3.7, y: rect.maxY - 3.7))
+            x.move(to: NSPoint(x: rect.maxX - 3.7, y: rect.minY + 3.7))
+            x.line(to: NSPoint(x: rect.minX + 3.7, y: rect.maxY - 3.7))
+            x.stroke()
+        }
+    }
+
+    private var accessibilityText: String {
+        switch state {
+        case .idle: return "未设置"
+        case .authorized: return "已授权"
+        case .denied: return "未授权"
+        case .working: return "处理中"
+        }
+    }
+}

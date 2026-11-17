@@ -144,6 +144,7 @@ final class SidebarButton: NSButton {
         didSet { applyStyle() }
     }
     private var hovering = false
+    private let indicator = NSView()
 
     init(title: String, symbol: String, action: Selector, target: AnyObject) {
         super.init(frame: .zero)
@@ -159,6 +160,17 @@ final class SidebarButton: NSButton {
         self.wantsLayer = true
         self.layer?.cornerRadius = 7
         self.layer?.cornerCurve = .continuous
+        indicator.wantsLayer = true
+        indicator.layer?.cornerRadius = 1
+        indicator.layer?.backgroundColor = Theme.accent.resolvedForAppearance().cgColor
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(indicator)
+        NSLayoutConstraint.activate([
+            indicator.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            indicator.topAnchor.constraint(equalTo: topAnchor, constant: 9),
+            indicator.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
+            indicator.widthAnchor.constraint(equalToConstant: 2),
+        ])
         applyStyle()
     }
 
@@ -190,9 +202,18 @@ final class SidebarButton: NSButton {
         needsDisplay = true
     }
 
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard selected else { return }
+        Theme.accent.resolvedForAppearance().setFill()
+        NSBezierPath(roundedRect: NSRect(x: 4, y: 9, width: 2, height: bounds.height - 18), xRadius: 1, yRadius: 1).fill()
+    }
+
     private func applyStyle() {
+        indicator.isHidden = true
+        needsDisplay = true
         if selected {
-            layer?.backgroundColor = Theme.accent.withAlphaComponent(0.13).cgColor
+            layer?.backgroundColor = Theme.accent.withAlphaComponent(0.09).cgColor
             contentTintColor = Theme.text
         } else if hovering {
             layer?.backgroundColor = Theme.text.withAlphaComponent(0.05).cgColor
@@ -212,10 +233,10 @@ final class SettingsWindowController: NSWindowController {
     private let onAppearanceChanged: () -> Void
     private let onCheckin: () -> Void
 
-    private let refreshPopup = NSPopUpButton()
+    private let refreshPopup = GlidePopUpButton(frame: .zero, pullsDown: false)
     private let proxyField = NSTextField()
-    private let menuBarModePopup = NSPopUpButton()
-    private let fixedProviderPopup = NSPopUpButton()
+    private let menuBarModePopup = GlidePopUpButton(frame: .zero, pullsDown: false)
+    private let fixedProviderPopup = GlidePopUpButton(frame: .zero, pullsDown: false)
     private let loginSwitch = AccentSwitch()
     private let loginStatusLabel = NSTextField(labelWithString: "")
     private let scaleSlider = WakeSlider()
@@ -226,7 +247,7 @@ final class SettingsWindowController: NSWindowController {
     private var suppressDirty = true
     private let appearanceControl = NSSegmentedControl()
     private let checkinSwitch = AccentSwitch()
-    private let checkinHourPopup = NSPopUpButton()
+    private let checkinHourPopup = GlidePopUpButton(frame: .zero, pullsDown: false)
     private let checkinStatusLabel = NSTextField(labelWithString: "")
     private let checkinTitleLabel = NSTextField(labelWithString: "今日签到")
     private let checkinButton = NSButton(title: "立即签到", target: nil, action: nil)
@@ -235,6 +256,7 @@ final class SettingsWindowController: NSWindowController {
     private let notifySwitch = AccentSwitch()
     private let notifyPercentField = NSTextField()
     private let notifyStatusLabel = NSTextField(labelWithString: "")
+    private let permissionMark = StatusMarkView()
     private let testNotifyButton = NSButton(title: "测试", target: nil, action: nil)
     private let notificationSettingsButton = NSButton(title: "权限设置", target: nil, action: nil)
     private var creditThresholdFields: [String: NSTextField] = [:]
@@ -1062,7 +1084,7 @@ final class SettingsWindowController: NSWindowController {
         notifyControl.alignment = .centerY
         notifyControl.spacing = 10
 
-        let permissionRow = NSStackView(views: [notifyStatusLabel, notificationSettingsButton])
+        let permissionRow = NSStackView(views: [permissionMark, notifyStatusLabel, notificationSettingsButton])
         permissionRow.orientation = .horizontal
         permissionRow.alignment = .centerY
         permissionRow.spacing = 10
@@ -1203,12 +1225,15 @@ final class SettingsWindowController: NSWindowController {
             guard let self else { return }
             switch status {
             case .authorized, .provisional, .ephemeral:
+                self.permissionMark.state = .authorized
                 self.notifyStatusLabel.stringValue = "系统通知已授权"
                 self.notifyStatusLabel.textColor = Theme.success
             case .denied:
+                self.permissionMark.state = .denied
                 self.notifyStatusLabel.stringValue = "系统通知被关闭"
                 self.notifyStatusLabel.textColor = Theme.warning
             default:
+                self.permissionMark.state = .idle
                 self.notifyStatusLabel.stringValue = "尚未授权"
                 self.notifyStatusLabel.textColor = Theme.tertiary
             }
