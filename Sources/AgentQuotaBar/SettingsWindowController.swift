@@ -202,13 +202,6 @@ final class SidebarButton: NSButton {
         needsDisplay = true
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard selected else { return }
-        Theme.accent.resolvedForAppearance().setFill()
-        NSBezierPath(roundedRect: NSRect(x: 0, y: 9, width: 3, height: bounds.height - 18), xRadius: 1.5, yRadius: 1.5).fill()
-    }
-
     private func applyStyle() {
         indicator.isHidden = true
         needsDisplay = true
@@ -233,10 +226,10 @@ final class SettingsWindowController: NSWindowController {
     private let onAppearanceChanged: () -> Void
     private let onCheckin: () -> Void
 
-    private let refreshPopup = GlidePopUpButton(frame: .zero, pullsDown: false)
-    private let proxyField = NSTextField()
-    private let menuBarModePopup = GlidePopUpButton(frame: .zero, pullsDown: false)
-    private let fixedProviderPopup = GlidePopUpButton(frame: .zero, pullsDown: false)
+    private let refreshPopup = GlideSelect(frame: .zero)
+    private let proxyField = QuotaTextField()
+    private let menuBarModePopup = GlideSelect(frame: .zero)
+    private let fixedProviderPopup = GlideSelect(frame: .zero)
     private let loginSwitch = AccentSwitch()
     private let loginStatusLabel = NSTextField(labelWithString: "")
     private let scaleSlider = WakeSlider()
@@ -247,14 +240,14 @@ final class SettingsWindowController: NSWindowController {
     private var suppressDirty = true
     private let appearanceControl = NSSegmentedControl()
     private let checkinSwitch = AccentSwitch()
-    private let checkinHourPopup = GlidePopUpButton(frame: .zero, pullsDown: false)
+    private let checkinHourPopup = GlideSelect(frame: .zero)
     private let checkinStatusLabel = NSTextField(labelWithString: "")
     private let checkinTitleLabel = NSTextField(labelWithString: "今日签到")
     private let checkinButton = NSButton(title: "立即签到", target: nil, action: nil)
     private let warningSlider = ScrubValueField()
     private let dangerSlider = ScrubValueField()
     private let notifySwitch = AccentSwitch()
-    private let notifyPercentField = NSTextField()
+    private let notifyPercentField = QuotaTextField()
     private let notifyStatusLabel = NSTextField(labelWithString: "")
     private let permissionMark = StatusMarkView()
     private let testNotifyButton = NSButton(title: "测试", target: nil, action: nil)
@@ -1090,7 +1083,7 @@ final class SettingsWindowController: NSWindowController {
         permissionRow.spacing = 10
 
         func thresholdField(_ id: String, fallback: Double) -> NSTextField {
-            let field = NSTextField()
+            let field = QuotaTextField()
             field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
             field.bezelStyle = .roundedBezel
             field.controlSize = .large

@@ -3,7 +3,7 @@ import AppKit
 /// 独立的用量历史窗口：按月展示每天的使用强度。
 /// 颜色只用一个绿色色相，用深浅表达级别，避免把不同 provider 的额度单位硬凑在一起。
 final class HistoryWindowController: NSWindowController {
-    private let providerPopup = GlidePopUpButton(frame: .zero, pullsDown: false)
+    private let providerPopup = GlideSelect(frame: .zero)
     private let monthLabel = NSTextField(labelWithString: "")
     private let summaryLabel = NSTextField(labelWithString: "")
     private let currentLabel = NSTextField(labelWithString: "")
