@@ -218,7 +218,7 @@ final class SettingsWindowController: NSWindowController {
     private let fixedProviderPopup = NSPopUpButton()
     private let loginSwitch = AccentSwitch()
     private let loginStatusLabel = NSTextField(labelWithString: "")
-    private let scaleSlider = NSSlider()
+    private let scaleSlider = WakeSlider()
     private let scaleLabel = NSTextField(labelWithString: "125%")
     private let scalePreview = NSImageView()
     private let hintLabel = NSTextField(labelWithString: "")
@@ -230,12 +230,8 @@ final class SettingsWindowController: NSWindowController {
     private let checkinStatusLabel = NSTextField(labelWithString: "")
     private let checkinTitleLabel = NSTextField(labelWithString: "今日签到")
     private let checkinButton = NSButton(title: "立即签到", target: nil, action: nil)
-    private let warningSlider = NSSlider()
-    private let dangerSlider = NSSlider()
-    private let warningValueLabel = NSTextField(labelWithString: "45%")
-    private let dangerValueLabel = NSTextField(labelWithString: "20%")
-    private let warningMaxLabel = NSTextField(labelWithString: "99%")
-    private let dangerMaxLabel = NSTextField(labelWithString: "44%")
+    private let warningSlider = ScrubValueField()
+    private let dangerSlider = ScrubValueField()
     private let notifySwitch = AccentSwitch()
     private let notifyPercentField = NSTextField()
     private let notifyStatusLabel = NSTextField(labelWithString: "")
@@ -888,18 +884,15 @@ final class SettingsWindowController: NSWindowController {
 
         scaleSlider.minValue = 0.8
         scaleSlider.maxValue = 1.6
-        scaleSlider.doubleValue = service.config.double("menuBarIconScale", default: 1.25)
-        scaleSlider.isContinuous = true
-        scaleSlider.trackFillColor = Theme.accent.resolvedForAppearance()
-        scaleSlider.target = self
-        scaleSlider.action = #selector(scaleChanged)
+        scaleSlider.value = service.config.double("menuBarIconScale", default: 1.25)
+        scaleSlider.onChange = { [weak self] _ in self?.scaleChanged() }
         scaleSlider.setAccessibilityLabel("菜单栏图标大小")
         scaleSlider.translatesAutoresizingMaskIntoConstraints = false
         scaleSlider.widthAnchor.constraint(equalToConstant: 300).isActive = true
 
         scaleLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         scaleLabel.textColor = Theme.secondary
-        scaleLabel.stringValue = "\(Int(scaleSlider.doubleValue * 100))%"
+        scaleLabel.stringValue = "\(Int(scaleSlider.value * 100))%"
 
         let resetScale = NSButton(title: "恢复默认", target: self, action: #selector(resetScale))
         resetScale.bezelStyle = .inline
@@ -916,15 +909,10 @@ final class SettingsWindowController: NSWindowController {
         scalePreview.heightAnchor.constraint(equalToConstant: 30).isActive = true
         updateScalePreview()
 
-        let scaleRow = NSStackView(views: [scaleSlider, scaleLabel, resetScale])
+        let scaleRow = NSStackView(views: [scaleSlider, scaleLabel, resetScale, scalePreview])
         scaleRow.orientation = .horizontal
         scaleRow.alignment = .centerY
         scaleRow.spacing = 10
-
-        let scaleBox = NSStackView(views: [scaleRow, scalePreview])
-        scaleBox.orientation = .vertical
-        scaleBox.alignment = .trailing
-        scaleBox.spacing = 8
 
         let resetOrder = NSButton(title: "恢复默认顺序", target: self, action: #selector(resetOrder))
         resetOrder.bezelStyle = .rounded
@@ -936,7 +924,7 @@ final class SettingsWindowController: NSWindowController {
             controlRow("固定显示", fixedProviderPopup, caption: "仅当显示方式为「固定一家」时可用。"),
         ])
         let group2 = groupCard([
-            controlRow("图标大小", scaleBox, caption: nil),
+            controlRow("图标大小", scaleRow, caption: "拖动细条调整；右侧预览实际菜单栏大小。"),
         ])
         let group3 = groupCard([
             controlRow("面板顺序", resetOrder, caption: "在主面板拖动行排序；这里只恢复默认顺序。"),
@@ -1002,28 +990,18 @@ final class SettingsWindowController: NSWindowController {
             colorWells.append(well)
         }
 
-        for (label, slider) in [("警戒阈值", warningSlider), ("危险阈值", dangerSlider)] {
-            slider.minValue = 1
-            slider.maxValue = 99
-            slider.isContinuous = true
-            slider.trackFillColor = Theme.accent.resolvedForAppearance()
-            slider.target = self
-            slider.action = #selector(thresholdChanged)
-            slider.setAccessibilityLabel(label)
-            slider.translatesAutoresizingMaskIntoConstraints = false
-            slider.widthAnchor.constraint(equalToConstant: 260).isActive = true
-            slider.controlSize = .regular
+        for (label, field) in [("警戒阈值", warningSlider), ("危险阈值", dangerSlider)] {
+            field.minValue = 1
+            field.maxValue = 99
+            field.step = 1
+            field.suffix = "%"
+            field.onChange = { [weak self] _ in self?.thresholdChanged() }
+            field.setAccessibilityLabel(label)
+            field.widthAnchor.constraint(equalToConstant: 88).isActive = true
         }
-        warningSlider.doubleValue = QuotaStyle.warningPercent
+        warningSlider.value = QuotaStyle.warningPercent
         dangerSlider.maxValue = max(2, QuotaStyle.warningPercent - 1)
-        dangerSlider.doubleValue = min(QuotaStyle.dangerPercent, dangerSlider.maxValue)
-        for maxLabel in [warningMaxLabel, dangerMaxLabel] {
-            maxLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
-            maxLabel.textColor = Theme.tertiary
-        }
-        warningValueLabel.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
-        dangerValueLabel.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
-        updateThresholdLabels()
+        dangerSlider.value = min(QuotaStyle.dangerPercent, dangerSlider.maxValue)
 
         let colorRow = NSStackView()
         colorRow.orientation = .horizontal
@@ -1037,9 +1015,9 @@ final class SettingsWindowController: NSWindowController {
         let colorGroup = groupCard([
             controlRow("颜色", colorRow, caption: "点击色块修改；只影响面板和菜单栏。"),
             separator(),
-            controlRow("警戒阈值", NSStackView(views: [label("1%", size: 9, color: Theme.tertiary), warningSlider, warningMaxLabel, warningValueLabel]), caption: "剩余低于该比例时转为警戒色。"),
+            controlRow("警戒阈值", warningSlider, caption: "1–99%；拖动数值或点击输入。低于该比例转为警戒色。"),
             separator(),
-            controlRow("危险阈值", NSStackView(views: [label("1%", size: 9, color: Theme.tertiary), dangerSlider, dangerMaxLabel, dangerValueLabel]), caption: "剩余低于该比例时转为危险色。"),
+            controlRow("危险阈值", dangerSlider, caption: "1% 至「警戒值 − 1」%；低于该比例转为危险色。"),
         ])
 
         notifySwitch.isOn = service.config.bool("notifications.enabled", default: false)
@@ -1141,16 +1119,9 @@ final class SettingsWindowController: NSWindowController {
         ])
     }
 
-    private func updateThresholdLabels() {
-        warningValueLabel.stringValue = "\(Int(warningSlider.doubleValue.rounded()))%"
-        dangerValueLabel.stringValue = "\(Int(dangerSlider.doubleValue.rounded()))%"
-        warningMaxLabel.stringValue = "99%"
-        dangerMaxLabel.stringValue = "\(Int(warningSlider.doubleValue.rounded()) - 1)%"
-    }
-
     private func saveStyle() {
-        service.config.set("style.warningPercent", warningSlider.doubleValue)
-        service.config.set("style.dangerPercent", dangerSlider.doubleValue)
+        service.config.set("style.warningPercent", warningSlider.value)
+        service.config.set("style.dangerPercent", dangerSlider.value)
         for (index, well) in colorWells.enumerated() {
             let key = ["healthyColor", "warningColor", "dangerColor"][index]
             service.config.set("style.\(key)", QuotaStyle.hex(well.color))
@@ -1170,11 +1141,10 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func thresholdChanged() {
-        dangerSlider.maxValue = max(2, warningSlider.doubleValue - 1)
-        if dangerSlider.doubleValue > dangerSlider.maxValue {
-            dangerSlider.doubleValue = dangerSlider.maxValue
+        dangerSlider.maxValue = max(2, warningSlider.value - 1)
+        if dangerSlider.value > dangerSlider.maxValue {
+            dangerSlider.value = dangerSlider.maxValue
         }
-        updateThresholdLabels()
         saveStyle()
     }
 
@@ -1744,11 +1714,10 @@ final class SettingsWindowController: NSWindowController {
         refreshThemedSurfaces(in: content)
 
         // 这些控件保存的是静态 CGColor / 具体色，需要在外观切换后重新解析。
-        let accent = Theme.accent.resolvedForAppearance()
-        scaleSlider.trackFillColor = accent
-        warningSlider.trackFillColor = accent
-        dangerSlider.trackFillColor = accent
         navButtons.forEach { $0.refreshAppearance() }
+        scaleSlider.needsDisplay = true
+        warningSlider.needsDisplay = true
+        dangerSlider.needsDisplay = true
 
         // 状态色（成功/警告/危险）在深色外观下也是动态色，重算一次圆点与文字。
         updateProviderStatuses(service.snapshot)
@@ -1814,7 +1783,7 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func scaleChanged() {
-        let scale = scaleSlider.doubleValue
+        let scale = scaleSlider.value
         scaleLabel.stringValue = "\(Int((scale * 100).rounded()))%"
         service.config.set("menuBarIconScale", scale)
         try? service.config.save()
@@ -1823,7 +1792,7 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func resetScale() {
-        scaleSlider.doubleValue = 1.25
+        scaleSlider.value = 1.25
         scaleChanged()
     }
 
@@ -1866,8 +1835,8 @@ final class SettingsWindowController: NSWindowController {
 
     private func saveStyleValues() {
         guard warningSlider.superview != nil else { return }
-        service.config.set("style.warningPercent", warningSlider.doubleValue)
-        service.config.set("style.dangerPercent", dangerSlider.doubleValue)
+        service.config.set("style.warningPercent", warningSlider.value)
+        service.config.set("style.dangerPercent", dangerSlider.value)
         for (index, well) in colorWells.enumerated() {
             let key = ["healthyColor", "warningColor", "dangerColor"][index]
             service.config.set("style.\(key)", QuotaStyle.hex(well.color))
