@@ -1050,7 +1050,7 @@ final class SettingsWindowController: NSWindowController {
         notifyPercentField.alignment = .right
         notifyPercentField.setAccessibilityLabel("通知百分比阈值")
         notifyPercentField.translatesAutoresizingMaskIntoConstraints = false
-        notifyPercentField.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        notifyPercentField.widthAnchor.constraint(equalToConstant: 72).isActive = true
 
         notifyStatusLabel.stringValue = service.config.bool("notifications.enabled", default: false) ? "已开启" : "已关闭"
         notifyStatusLabel.font = .systemFont(ofSize: 10)
@@ -1093,19 +1093,27 @@ final class SettingsWindowController: NSWindowController {
             field.stringValue = String(format: "%.0f", service.config.double("style.thresholds.\(id)", default: fallback))
             field.setAccessibilityLabel("\(id) 阈值")
             field.translatesAutoresizingMaskIntoConstraints = false
-            field.widthAnchor.constraint(equalToConstant: 54).isActive = true
+            field.widthAnchor.constraint(equalToConstant: 72).isActive = true
             creditThresholdFields[id] = field
             return field
         }
 
         let pointsRow = NSStackView()
-        pointsRow.orientation = .horizontal
-        pointsRow.alignment = .centerY
-        pointsRow.spacing = 8
-        pointsRow.addArrangedSubview(label("Trae", size: 11, color: Theme.tertiary))
-        pointsRow.addArrangedSubview(thresholdField("trae", fallback: 200))
-        pointsRow.addArrangedSubview(label("WorkBuddy", size: 11, color: Theme.tertiary))
-        pointsRow.addArrangedSubview(thresholdField("workbuddy", fallback: 500))
+        pointsRow.orientation = .vertical
+        pointsRow.alignment = .trailing
+        pointsRow.spacing = 3
+        for (name, id, fallback) in [("Trae", "trae", 200.0), ("WorkBuddy", "workbuddy", 500.0)] {
+            let line = NSStackView()
+            line.orientation = .horizontal
+            line.alignment = .centerY
+            line.spacing = 8
+            line.addArrangedSubview(label(name, size: 11, color: Theme.tertiary))
+            let threshold = thresholdField(id, fallback: fallback)
+            line.addArrangedSubview(threshold)
+            threshold.trailingAnchor.constraint(equalTo: line.trailingAnchor).isActive = true
+            pointsRow.addArrangedSubview(line)
+            line.trailingAnchor.constraint(equalTo: pointsRow.trailingAnchor).isActive = true
+        }
 
         let balanceRow = NSStackView()
         balanceRow.orientation = .horizontal
@@ -1121,7 +1129,7 @@ final class SettingsWindowController: NSWindowController {
             separator(),
             controlRow("百分比阈值", notifyPercentField, caption: nil),
             separator(),
-            controlRow("积分阈值", pointsRow, caption: "Trae / WorkBuddy 各自的提醒线。"),
+            controlRow("积分阈值", pointsRow, caption: nil),
             separator(),
             controlRow("余额阈值", balanceRow, caption: nil),
         ]
