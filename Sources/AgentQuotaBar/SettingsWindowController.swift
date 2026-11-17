@@ -642,7 +642,9 @@ final class SettingsWindowController: NSWindowController {
         refreshPopup.target = self
         refreshPopup.action = #selector(refreshOptionChanged)
         refreshPopup.translatesAutoresizingMaskIntoConstraints = false
-        refreshPopup.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        refreshPopup.widthAnchor.constraint(equalToConstant: 96).isActive = true
+        refreshPopup.setContentHuggingPriority(.required, for: .horizontal)
+        refreshPopup.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         proxyField.font = .systemFont(ofSize: 12)
         proxyField.bezelStyle = .roundedBezel
@@ -1099,7 +1101,7 @@ final class SettingsWindowController: NSWindowController {
         let pointsRow = NSStackView()
         pointsRow.orientation = .horizontal
         pointsRow.alignment = .centerY
-        pointsRow.spacing = 10
+        pointsRow.spacing = 8
         pointsRow.addArrangedSubview(label("Trae", size: 11, color: Theme.tertiary))
         pointsRow.addArrangedSubview(thresholdField("trae", fallback: 200))
         pointsRow.addArrangedSubview(label("WorkBuddy", size: 11, color: Theme.tertiary))
@@ -1119,7 +1121,7 @@ final class SettingsWindowController: NSWindowController {
             separator(),
             controlRow("百分比阈值", notifyPercentField, caption: nil),
             separator(),
-            controlRow("积分阈值", pointsRow, caption: nil),
+            controlRow("积分阈值", pointsRow, caption: "Trae / WorkBuddy 各自的提醒线。"),
             separator(),
             controlRow("余额阈值", balanceRow, caption: nil),
         ]

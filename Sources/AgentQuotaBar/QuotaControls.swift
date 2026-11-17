@@ -349,7 +349,7 @@ final class GlideSelect: NSControl {
     private var popover: NSPopover?
     var bezelStyle: NSButton.BezelStyle = .rounded
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 160, height: 30) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 96, height: 30) }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
