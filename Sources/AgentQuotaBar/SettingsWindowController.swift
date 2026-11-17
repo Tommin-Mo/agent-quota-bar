@@ -247,12 +247,12 @@ final class SettingsWindowController: NSWindowController {
     private let warningSlider = ScrubValueField()
     private let dangerSlider = ScrubValueField()
     private let notifySwitch = AccentSwitch()
-    private let notifyPercentField = QuotaTextField()
+    private let notifyPercentField = ScrubValueField()
     private let notifyStatusLabel = NSTextField(labelWithString: "")
     private let permissionMark = StatusMarkView()
     private let testNotifyButton = NSButton(title: "测试", target: nil, action: nil)
     private let notificationSettingsButton = NSButton(title: "权限设置", target: nil, action: nil)
-    private var creditThresholdFields: [String: NSTextField] = [:]
+    private var creditThresholdFields: [String: ScrubValueField] = [:]
     private var colorWells: [NSColorWell] = []
     private weak var scrollView: NSScrollView?
 
@@ -1043,14 +1043,14 @@ final class SettingsWindowController: NSWindowController {
         notifySwitch.setAccessibilityLabel("低额度通知")
         notifySwitch.translatesAutoresizingMaskIntoConstraints = false
 
-        notifyPercentField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        notifyPercentField.bezelStyle = .roundedBezel
-        notifyPercentField.controlSize = .large
-        notifyPercentField.stringValue = String(format: "%.0f", service.config.double("notifications.percent", default: 20))
-        notifyPercentField.alignment = .right
+        notifyPercentField.minValue = 0
+        notifyPercentField.maxValue = 100
+        notifyPercentField.step = 1
+        notifyPercentField.suffix = "%"
+        notifyPercentField.value = service.config.double("notifications.percent", default: 20)
+        notifyPercentField.onChange = { [weak self] _ in self?.saveStyle() }
         notifyPercentField.setAccessibilityLabel("通知百分比阈值")
-        notifyPercentField.translatesAutoresizingMaskIntoConstraints = false
-        notifyPercentField.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        notifyPercentField.widthAnchor.constraint(equalToConstant: 74).isActive = true
 
         notifyStatusLabel.stringValue = service.config.bool("notifications.enabled", default: false) ? "已开启" : "已关闭"
         notifyStatusLabel.font = .systemFont(ofSize: 10)
@@ -1084,16 +1084,16 @@ final class SettingsWindowController: NSWindowController {
         permissionRow.alignment = .centerY
         permissionRow.spacing = 10
 
-        func thresholdField(_ id: String, fallback: Double) -> NSTextField {
-            let field = QuotaTextField()
-            field.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-            field.bezelStyle = .roundedBezel
-            field.controlSize = .large
-            field.alignment = .right
-            field.stringValue = String(format: "%.0f", service.config.double("style.thresholds.\(id)", default: fallback))
+        func thresholdField(_ id: String, fallback: Double) -> ScrubValueField {
+            let field = ScrubValueField()
+            field.minValue = 0
+            field.maxValue = 100_000
+            field.step = 1
+            field.suffix = id == "deepseek" ? "元" : "积分"
+            field.value = service.config.double("style.thresholds.\(id)", default: fallback)
+            field.onChange = { [weak self] _ in self?.saveStyle() }
             field.setAccessibilityLabel("\(id) 阈值")
-            field.translatesAutoresizingMaskIntoConstraints = false
-            field.widthAnchor.constraint(equalToConstant: 72).isActive = true
+            field.widthAnchor.constraint(equalToConstant: 74).isActive = true
             creditThresholdFields[id] = field
             return field
         }
@@ -1152,10 +1152,10 @@ final class SettingsWindowController: NSWindowController {
             service.config.set("style.\(key)", QuotaStyle.hex(well.color))
         }
         for (id, field) in creditThresholdFields {
-            service.config.set("style.thresholds.\(id)", field.doubleValue)
+            service.config.set("style.thresholds.\(id)", field.value)
         }
         service.config.set("notifications.enabled", notifySwitch.isOn)
-        service.config.set("notifications.percent", notifyPercentField.doubleValue)
+        service.config.set("notifications.percent", notifyPercentField.value)
         try? service.config.save()
         QuotaStyle.apply(service.config)
         onSaved()
@@ -1874,10 +1874,10 @@ final class SettingsWindowController: NSWindowController {
             service.config.set("style.\(key)", QuotaStyle.hex(well.color))
         }
         for (id, field) in creditThresholdFields {
-            service.config.set("style.thresholds.\(id)", field.doubleValue)
+            service.config.set("style.thresholds.\(id)", field.value)
         }
         service.config.set("notifications.enabled", notifySwitch.isOn)
-        service.config.set("notifications.percent", notifyPercentField.doubleValue)
+        service.config.set("notifications.percent", notifyPercentField.value)
     }
 
     @objc private func save() {

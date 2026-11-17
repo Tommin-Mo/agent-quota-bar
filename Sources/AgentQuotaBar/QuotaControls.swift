@@ -560,7 +560,7 @@ final class QuotaTextField: NSTextField {
     override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: super.intrinsicContentSize.width, height: 30)
+        NSSize(width: super.intrinsicContentSize.width, height: 26)
     }
 
     override init(frame frameRect: NSRect) {
