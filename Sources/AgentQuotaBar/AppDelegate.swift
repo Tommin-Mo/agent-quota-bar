@@ -389,7 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     value: item.value,
                     remaining: item.remaining,
                     severity: item.severity,
-                    scale: CGFloat(service.config.double("menuBarIconScale", default: 1.25)),
+                    scale: service.effectiveMenuBarIconScale,
                     ink: .white
                 )
                 icon.draw(in: NSRect(x: 10 + index * 47, y: 14, width: 28, height: 18))
@@ -489,7 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 ?? snapshot.worstProviderID()
                 ?? snapshot.providers.first?.id
             if let id = providerID, let item = snapshot.menuBarItem(for: id) {
-                let scale = CGFloat(service.config.double("menuBarIconScale", default: 1.25))
+                let scale = service.effectiveMenuBarIconScale
                 button.image = MenuBarIcon.make(
                     provider: id,
                     value: item.value,
@@ -510,7 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     value: "—",
                     remaining: nil,
                     severity: .neutral,
-                    scale: CGFloat(service.config.double("menuBarIconScale", default: 1.25)),
+                    scale: service.effectiveMenuBarIconScale,
                     ink: menuBarInk()
                 )
                 button.attributedTitle = NSAttributedString(string: "")
@@ -522,7 +522,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 value: service.isRefreshing ? "…" : "—",
                 remaining: nil,
                 severity: .neutral,
-                scale: CGFloat(service.config.double("menuBarIconScale", default: 1.25)),
+                scale: service.effectiveMenuBarIconScale,
                 ink: menuBarInk()
             )
             button.attributedTitle = NSAttributedString(string: "")

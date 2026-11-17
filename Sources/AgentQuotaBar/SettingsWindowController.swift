@@ -899,9 +899,9 @@ final class SettingsWindowController: NSWindowController {
         fixedProviderPopup.translatesAutoresizingMaskIntoConstraints = false
         fixedProviderPopup.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
-        scaleSlider.minValue = 0.8
-        scaleSlider.maxValue = 1.6
-        scaleSlider.value = service.config.double("menuBarIconScale", default: 1.25)
+        scaleSlider.minValue = 0.5
+        scaleSlider.maxValue = 1.5
+        scaleSlider.value = service.menuBarIconScaleFactor
         scaleSlider.onChange = { [weak self] _ in self?.scaleChanged() }
         scaleSlider.setAccessibilityLabel("菜单栏图标大小")
         scaleSlider.translatesAutoresizingMaskIntoConstraints = false
@@ -909,7 +909,7 @@ final class SettingsWindowController: NSWindowController {
 
         scaleLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         scaleLabel.textColor = Theme.secondary
-        scaleLabel.stringValue = "\(Int(scaleSlider.value * 100))%"
+        scaleLabel.stringValue = String(format: "%.2f×", scaleSlider.value)
 
         let resetScale = NSButton(title: "恢复默认", target: self, action: #selector(resetScale))
         resetScale.bezelStyle = .inline
@@ -941,7 +941,7 @@ final class SettingsWindowController: NSWindowController {
             controlRow("固定显示", fixedProviderPopup, caption: "仅当显示方式为「固定一家」时可用。"),
         ])
         let group2 = groupCard([
-            controlRow("图标大小", scaleRow, caption: "拖动细条调整；右侧预览实际菜单栏大小。"),
+            controlRow("图标大小", scaleRow, caption: "以当前大小为 1.00× 基准；可调 0.50×–1.50×。"),
         ])
         let group3 = groupCard([
             controlRow("面板顺序", resetOrder, caption: "在主面板拖动行排序；这里只恢复默认顺序。"),
@@ -1806,22 +1806,23 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func scaleChanged() {
-        let scale = scaleSlider.value
-        scaleLabel.stringValue = "\(Int((scale * 100).rounded()))%"
-        service.config.set("menuBarIconScale", scale)
+        let factor = scaleSlider.value
+        scaleLabel.stringValue = String(format: "%.2f×", factor)
+        service.config.set("menuBarIconScaleFactor", factor)
+        service.config.set("menuBarIconScale", Double(service.effectiveMenuBarIconScale))
         try? service.config.save()
         updateScalePreview()
         NotificationCenter.default.post(name: .quotaSettingsChanged, object: nil)
     }
 
     @objc private func resetScale() {
-        scaleSlider.value = 1.25
+        scaleSlider.value = 1.0
         scaleChanged()
     }
 
     private func updateScalePreview() {
-        let scale = CGFloat(service.config.double("menuBarIconScale", default: 1.25))
-        scaleLabel.stringValue = "\(Int((scale * 100).rounded()))%"
+        let scale = service.effectiveMenuBarIconScale
+        scaleLabel.stringValue = String(format: "%.2f×", service.menuBarIconScaleFactor)
 
         let icon = MenuBarIcon.make(
             provider: "opencode",

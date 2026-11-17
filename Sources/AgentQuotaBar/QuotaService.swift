@@ -30,12 +30,32 @@ final class QuotaService {
 
     init() {
         cacheURL = config.url.deletingLastPathComponent().appendingPathComponent("last-snapshot.json")
+        ensureMenuBarScaleModel()
         if let data = try? Data(contentsOf: cacheURL),
            let cached = try? JSONDecoder().decode(QuotaSnapshot.self, from: data),
            !cached.providers.isEmpty {
             snapshot = cached
             publishWidgetSnapshot(data)
         }
+    }
+
+    /// 菜单栏图标大小以“用户当前的大小”为 1.00× 基准，
+    /// 配置里只存相对系数，避免界面被绝对值 1.43/143% 这种数字绑死。
+    var menuBarIconScaleFactor: Double {
+        min(1.5, max(0.5, config.double("menuBarIconScaleFactor", default: 1.0)))
+    }
+
+    var effectiveMenuBarIconScale: CGFloat {
+        let baseline = config.double("menuBarIconScaleBaseline", default: 1.43)
+        return CGFloat(max(0.3, baseline * menuBarIconScaleFactor))
+    }
+
+    private func ensureMenuBarScaleModel() {
+        guard config.double("menuBarIconScaleBaseline", default: 0) <= 0 else { return }
+        let current = config.double("menuBarIconScale", default: 1.43)
+        config.set("menuBarIconScaleBaseline", current > 0 ? current : 1.43)
+        config.set("menuBarIconScaleFactor", 1.0)
+        try? config.save()
     }
 
     func refresh() {
