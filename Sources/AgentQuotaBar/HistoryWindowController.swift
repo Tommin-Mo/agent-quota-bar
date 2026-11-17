@@ -35,8 +35,8 @@ final class HistoryWindowController: NSWindowController {
         self.calendar = cal
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 580),
-            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 540),
+            styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
@@ -55,7 +55,7 @@ final class HistoryWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError() }
 
     private func buildContent() -> NSView {
-        let root = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 640, height: 580))
+        let root = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 640, height: 540))
         root.wantsLayer = true
         root.surfaceColor = Theme.background
 
@@ -135,7 +135,7 @@ final class HistoryWindowController: NSWindowController {
         root.addSubview(legendRow)
 
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: root.topAnchor, constant: 22),
+            header.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
             header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 26),
             header.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -26),
 
@@ -158,7 +158,7 @@ final class HistoryWindowController: NSWindowController {
             legendRow.topAnchor.constraint(equalTo: calendarStack.bottomAnchor, constant: 14),
             legendRow.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 26),
             legendRow.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -26),
-            legendRow.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -22),
+            legendRow.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -16),
         ])
         buildLegend()
         return root
