@@ -317,12 +317,20 @@ final class QuotaPopoverViewController: NSViewController {
         costLabel.setAccessibilityValue(hasCost ? cost! : "无数据")
 
         let resolved = resolvedHistory()
+        let actual = resolved.values.compactMap { $0 }
         // 只有 1 天数据时不画一根孤零零的柱子；至少 2 天才构成“趋势”。
-        let hasHistory = resolved.values.compactMap { $0 }.count >= 2
-        // 剩余百分比固定 0–100 域，避免“只有一天/数值很小”被归一化成满格。
+        let hasHistory = actual.count >= 2
+        // 不再为缺失日期画灰点；只画真实采样，避免“近 7 天”里出现 5 个空点。
         sparkline.domainMax = resolved.caption.contains("成本") ? nil : 100
-        sparkline.values = resolved.values
-        historyCaptionLabel.stringValue = resolved.caption
+        sparkline.values = actual
+        if actual.count < 7 {
+            historyCaptionLabel.stringValue = resolved.caption.replacingOccurrences(
+                of: "近 7 天",
+                with: "最近 \(actual.count) 天"
+            )
+        } else {
+            historyCaptionLabel.stringValue = resolved.caption
+        }
         historyRow.isHidden = !hasHistory
     }
 
@@ -508,6 +516,13 @@ final class QuotaPopoverViewController: NSViewController {
         }
         for provider in snapshot.providers where provider.status != "disabled" && !result.contains(where: { $0.id == provider.id }) {
             result.append(provider)
+        }
+        // 服务顺序可以自定义，但分组顺序固定：订阅额度 → 现金余额 → 积分。
+        let categoryRank = ["订阅额度": 0, "现金余额": 1, "积分": 2]
+        result.sort {
+            let left = categoryRank[Self.category(for: $0)] ?? 9
+            let right = categoryRank[Self.category(for: $1)] ?? 9
+            return left < right
         }
         return result
     }
