@@ -252,7 +252,7 @@ final class SettingsWindowController: NSWindowController {
     private let permissionMark = StatusMarkView()
     private let testNotifyButton = NSButton(title: "测试", target: nil, action: nil)
     private let notificationSettingsButton = NSButton(title: "权限设置", target: nil, action: nil)
-    private var creditThresholdFields: [String: ScrubValueField] = [:]
+    private var creditThresholdFields: [String: QuotaTextField] = [:]
     private var colorWells: [NSColorWell] = []
     private weak var scrollView: NSScrollView?
 
@@ -655,6 +655,18 @@ final class SettingsWindowController: NSWindowController {
         proxyField.translatesAutoresizingMaskIntoConstraints = false
         proxyField.widthAnchor.constraint(equalToConstant: 160).isActive = true
 
+        let proxyIcon = NSImageView()
+        proxyIcon.image = NSImage(systemSymbolName: "network", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+        proxyIcon.contentTintColor = Theme.tertiary
+        proxyIcon.translatesAutoresizingMaskIntoConstraints = false
+        proxyIcon.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        proxyIcon.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        let proxyControl = NSStackView(views: [proxyIcon, proxyField])
+        proxyControl.orientation = .horizontal
+        proxyControl.alignment = .centerY
+        proxyControl.spacing = 8
+
         loginSwitch.target = self
         loginSwitch.action = #selector(loginSwitchChanged)
         loginSwitch.setAccessibilityLabel("开机自启动")
@@ -731,7 +743,7 @@ final class SettingsWindowController: NSWindowController {
         let preferencesGroup = groupCard([
             controlRow("刷新频率", refreshPopup, caption: "打开 App 后的自动刷新间隔；后台采样独立运行。"),
             separator(),
-            controlRow("系统代理", proxyField, caption: "auto 使用系统代理；也可填 http://127.0.0.1:7897；off 关闭。"),
+            controlRow("系统代理", proxyControl, caption: "auto 使用系统代理；也可填 http://127.0.0.1:7897；off 关闭。"),
             separator(),
             controlRow("外观", appearanceControl, caption: "只影响 AgentQuotaBar，不修改系统外观。"),
             separator(),
@@ -1084,15 +1096,15 @@ final class SettingsWindowController: NSWindowController {
         permissionRow.alignment = .centerY
         permissionRow.spacing = 10
 
-        func thresholdField(_ id: String, fallback: Double) -> ScrubValueField {
-            let field = ScrubValueField()
-            field.minValue = 0
-            field.maxValue = 100_000
-            field.step = 1
-            field.suffix = id == "deepseek" ? "元" : "积分"
-            field.value = service.config.double("style.thresholds.\(id)", default: fallback)
-            field.onChange = { [weak self] _ in self?.saveStyle() }
+        func thresholdField(_ id: String, fallback: Double) -> QuotaTextField {
+            let field = QuotaTextField()
+            field.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+            field.alignment = .center
+            field.stringValue = String(format: "%.0f", service.config.double("style.thresholds.\(id)", default: fallback))
             field.setAccessibilityLabel("\(id) 阈值")
+            field.delegate = self
+            field.target = self
+            field.action = #selector(thresholdFieldChanged)
             field.widthAnchor.constraint(equalToConstant: 74).isActive = true
             creditThresholdFields[id] = field
             return field
@@ -1152,7 +1164,7 @@ final class SettingsWindowController: NSWindowController {
             service.config.set("style.\(key)", QuotaStyle.hex(well.color))
         }
         for (id, field) in creditThresholdFields {
-            service.config.set("style.thresholds.\(id)", field.value)
+            service.config.set("style.thresholds.\(id)", field.doubleValue)
         }
         service.config.set("notifications.enabled", notifySwitch.isOn)
         service.config.set("notifications.percent", notifyPercentField.value)
@@ -1162,6 +1174,10 @@ final class SettingsWindowController: NSWindowController {
     }
 
     @objc private func colorChanged(_ sender: NSColorWell) {
+        saveStyle()
+    }
+
+    @objc private func thresholdFieldChanged() {
         saveStyle()
     }
 
@@ -1874,7 +1890,7 @@ final class SettingsWindowController: NSWindowController {
             service.config.set("style.\(key)", QuotaStyle.hex(well.color))
         }
         for (id, field) in creditThresholdFields {
-            service.config.set("style.thresholds.\(id)", field.value)
+            service.config.set("style.thresholds.\(id)", field.doubleValue)
         }
         service.config.set("notifications.enabled", notifySwitch.isOn)
         service.config.set("notifications.percent", notifyPercentField.value)
@@ -1908,8 +1924,12 @@ final class SettingsWindowController: NSWindowController {
 
 extension SettingsWindowController: NSTextFieldDelegate {
     func controlTextDidEndEditing(_ obj: Notification) {
-        guard let field = obj.object as? NSTextField, field === proxyField else { return }
-        saveGeneralSettings()
+        guard let field = obj.object as? NSTextField else { return }
+        if field === proxyField {
+            saveGeneralSettings()
+        } else if creditThresholdFields.values.contains(where: { $0 === field }) {
+            saveStyle()
+        }
     }
 }
 
