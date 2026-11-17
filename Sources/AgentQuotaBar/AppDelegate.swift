@@ -945,7 +945,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.activate(ignoringOtherApps: true)
         settingsController?.window?.makeKey()
         settingsController?.window?.orderFrontRegardless()
-        _ = wasAccessory
+        if wasAccessory, let settingsWindow = settingsController?.window {
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: settingsWindow,
+                queue: .main
+            ) { _ in
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
     }
 
     func openSetup(provider: String) {
