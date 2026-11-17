@@ -8,7 +8,7 @@ import Foundation
 final class HistoryStore {
     static let shared = HistoryStore()
 
-    static let retentionDays = 7
+    static let retentionDays = 35
     static let fileName = "history.json"
 
     private struct Persisted: Codable {

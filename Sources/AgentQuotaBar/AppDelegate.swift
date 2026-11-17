@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let switchCooldown: TimeInterval = 10
     private var didPopoverSnapshot = false
     private var didDebugPopover = false
+    private var historyController: HistoryWindowController?
     private var didStatusSnapshot = false
     private var didIconPreview = false
     private var loginPreview: WebLoginWindowController?
@@ -74,6 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         popoverController.onCheckin = { [weak self] in
             self?.checkin.runNow(manual: true)
+        }
+        popoverController.onHistory = { [weak self] in
+            self?.openHistory()
         }
         popoverController.onToggleAppearance = { [weak self] in
             self?.toggleAppearance()
@@ -215,6 +219,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     /// 外观切换后立刻刷新一次，再在 AppKit 真正消化外观后补两次。
+    private func openHistory() {
+        let id = activeProviderID
+            ?? service.snapshot?.worstProviderID()
+            ?? ProviderRegistry.ids.first
+            ?? "codex"
+        if historyController == nil {
+            historyController = HistoryWindowController(providerID: id)
+        }
+        historyController?.showWindow(nil)
+        historyController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     private func refreshThemeSurfaces() {
         popoverController?.refreshAppearance()
         settingsController?.reloadForAppearance()
@@ -279,6 +296,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 if let path = env["AQB_SHEET_SNAPSHOT"] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
                         guard let view = self?.settingsController?.window?.attachedSheet?.contentView else { return }
+                        self?.writeSnapshot(of: view, to: path)
+                    }
+                }
+            }
+        }
+
+        if env["AQB_OPEN_HISTORY"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                self?.openHistory()
+                if let path = env["AQB_HISTORY_SNAPSHOT"] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        guard let view = self?.historyController?.window?.contentView else { return }
                         self?.writeSnapshot(of: view, to: path)
                     }
                 }

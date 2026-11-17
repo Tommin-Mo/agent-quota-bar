@@ -17,6 +17,7 @@ final class QuotaPopoverViewController: NSViewController {
     var onOpenSettings: (() -> Void)?
     var onRefresh: (() -> Void)?
     var onCheckin: (() -> Void)?
+    var onHistory: (() -> Void)?
     var onToggleAppearance: (() -> Void)?
     var onReorder: (([String]) -> Void)?
 
@@ -215,12 +216,17 @@ final class QuotaPopoverViewController: NSViewController {
         let footerSpacer = NSView()
         footerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
+        let history = NSButton(title: "历史", target: self, action: #selector(historyTapped))
+        history.isBordered = false
+        history.font = .systemFont(ofSize: 10)
+        history.contentTintColor = Theme.accent
+
         let quit = NSButton(title: "退出", target: self, action: #selector(quitTapped))
         quit.isBordered = false
         quit.font = .systemFont(ofSize: 10)
         quit.contentTintColor = Theme.tertiary
 
-        let footer = NSStackView(views: [footerLabel, footerSpacer, quit])
+        let footer = NSStackView(views: [footerLabel, footerSpacer, history, quit])
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 6
@@ -617,6 +623,7 @@ final class QuotaPopoverViewController: NSViewController {
 
     @objc private func refreshTapped() { onRefresh?() }
     @objc private func settingsTapped() { onOpenSettings?() }
+    @objc private func historyTapped() { onHistory?() }
     @objc private func quitTapped() { NSApplication.shared.terminate(nil) }
 }
 
