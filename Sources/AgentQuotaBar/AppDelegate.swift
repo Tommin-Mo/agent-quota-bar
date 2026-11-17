@@ -224,6 +224,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // 历史默认是整体额度监控；具体 Agent 在窗口内选择。
             historyController = HistoryWindowController(providerID: "all")
         }
+        historyController?.currentSnapshotProvider = { [weak self] in self?.service.snapshot }
+        historyController?.refreshForExternalSnapshot()
         historyController?.showWindow(nil)
         historyController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

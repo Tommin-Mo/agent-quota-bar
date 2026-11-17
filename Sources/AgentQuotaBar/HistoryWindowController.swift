@@ -6,11 +6,13 @@ final class HistoryWindowController: NSWindowController {
     private let providerPopup = NSPopUpButton()
     private let monthLabel = NSTextField(labelWithString: "")
     private let summaryLabel = NSTextField(labelWithString: "")
+    private let currentLabel = NSTextField(labelWithString: "")
     private let calendarStack = NSStackView()
     private let legendRow = NSStackView()
     private var providerID: String
     private var monthOffset = 0
     private var calendar: Calendar
+    var currentSnapshotProvider: (() -> QuotaSnapshot?)?
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -33,7 +35,7 @@ final class HistoryWindowController: NSWindowController {
         self.calendar = cal
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 580),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -53,7 +55,7 @@ final class HistoryWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError() }
 
     private func buildContent() -> NSView {
-        let root = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 640, height: 540))
+        let root = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 640, height: 580))
         root.wantsLayer = true
         root.surfaceColor = Theme.background
 
@@ -70,6 +72,7 @@ final class HistoryWindowController: NSWindowController {
         providerPopup.controlSize = .large
         providerPopup.target = self
         providerPopup.action = #selector(providerChanged)
+        providerPopup.focusRingType = .none
         providerPopup.translatesAutoresizingMaskIntoConstraints = false
         providerPopup.widthAnchor.constraint(equalToConstant: 150).isActive = true
 
@@ -100,6 +103,11 @@ final class HistoryWindowController: NSWindowController {
         summaryLabel.textColor = Theme.secondary
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(summaryLabel)
+
+        currentLabel.font = .systemFont(ofSize: 11)
+        currentLabel.textColor = Theme.secondary
+        currentLabel.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(currentLabel)
 
         let weekdayRow = NSStackView()
         weekdayRow.orientation = .horizontal
@@ -135,7 +143,11 @@ final class HistoryWindowController: NSWindowController {
             summaryLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 26),
             summaryLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -26),
 
-            weekdayRow.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 12),
+            currentLabel.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 5),
+            currentLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 26),
+            currentLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -26),
+
+            weekdayRow.topAnchor.constraint(equalTo: currentLabel.bottomAnchor, constant: 10),
             weekdayRow.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 26),
             weekdayRow.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -26),
 
@@ -203,6 +215,11 @@ final class HistoryWindowController: NSWindowController {
         refresh()
     }
 
+    func refreshForExternalSnapshot() {
+        guard isWindowLoaded else { return }
+        refresh()
+    }
+
     private func refresh() {
         let now = Date()
         guard let monthDate = calendar.date(byAdding: .month, value: monthOffset, to: now) else { return }
@@ -240,6 +257,8 @@ final class HistoryWindowController: NSWindowController {
         let providerName = providerID == "all" ? "全部 Agent" : ProviderStyles.style(for: providerID).shortName
         summaryLabel.stringValue = "\(providerName) · 活跃 \(activeDays) 天 · 连续使用 \(streak) 天"
         summaryLabel.textColor = Theme.secondary
+        currentLabel.stringValue = currentQuotaText()
+        currentLabel.isHidden = currentLabel.stringValue.isEmpty
 
         calendarStack.arrangedSubviews.forEach { calendarStack.removeArrangedSubview($0); $0.removeFromSuperview() }
         let firstWeekday = calendar.component(.weekday, from: firstOfMonth)
@@ -287,6 +306,30 @@ final class HistoryWindowController: NSWindowController {
             calendarStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: calendarStack.widthAnchor).isActive = true
         }
+    }
+
+    private func currentQuotaText() -> String {
+        guard let snapshot = currentSnapshotProvider?() else { return "" }
+        let percent = snapshot.providers.compactMap { provider -> (ProviderStatus, QuotaMetric)? in
+            guard provider.status != "disabled", let metric = provider.metrics.first(where: { $0.kind == "percent" }) else { return nil }
+            return (provider, metric)
+        }
+        if let (provider, metric) = percent.min(by: { ($0.1.remainingPercent ?? 100) < ($1.1.remainingPercent ?? 100) }) {
+            let remaining = Int((metric.remainingPercent ?? 0).rounded())
+            let reset = metric.resetAt.flatMap { raw -> String? in
+                let date = Date(timeIntervalSince1970: raw > 1_000_000_000_000 ? raw / 1000 : raw)
+                let interval = date.timeIntervalSinceNow
+                guard interval > 0 else { return nil }
+                if interval >= 86_400 { return "\(Int(interval / 86_400)) 天后重置" }
+                if interval >= 3_600 { return "\(Int(interval / 3_600)) 小时后重置" }
+                return "\(Int(interval / 60)) 分钟后重置"
+            }
+            return "当前最紧张：\(ProviderStyles.style(for: provider.id).shortName) \(remaining)%\(reset.map { " · \($0)" } ?? "")"
+        }
+        if let provider = snapshot.providers.first(where: { $0.balance != nil }) {
+            return "当前余额：\(ProviderStyles.style(for: provider.id).shortName) \(provider.displayPrimaryValue)"
+        }
+        return ""
     }
 
     private func score(for entry: UsageHistoryEntry) -> Double {
@@ -386,8 +429,8 @@ private final class HistoryDayCell: NSView {
     static func background(for level: UsageLevel) -> NSColor {
         switch level {
         case .none: return Theme.surfaceAlt
-        case .light: return Theme.success.withAlphaComponent(0.18)
-        case .medium: return Theme.success.withAlphaComponent(0.38)
+        case .light: return Theme.success.withAlphaComponent(0.26)
+        case .medium: return Theme.success.withAlphaComponent(0.46)
         case .dark: return Theme.success.withAlphaComponent(0.82)
         }
     }
