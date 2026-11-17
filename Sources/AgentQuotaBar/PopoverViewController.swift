@@ -318,19 +318,13 @@ final class QuotaPopoverViewController: NSViewController {
 
         let resolved = resolvedHistory()
         let actual = resolved.values.compactMap { $0 }
-        // 只有 1 天数据时不画一根孤零零的柱子；至少 2 天才构成“趋势”。
-        let hasHistory = actual.count >= 2
+        // 只有 1～2 天采样不是“趋势”，反而像一条无解释的装饰条；
+        // 满 7 天才显示，并改成一个明确的区间标签。
+        let hasHistory = actual.count >= 7
         // 不再为缺失日期画灰点；只画真实采样，避免“近 7 天”里出现 5 个空点。
         sparkline.domainMax = resolved.caption.contains("成本") ? nil : 100
         sparkline.values = actual
-        if actual.count < 7 {
-            historyCaptionLabel.stringValue = resolved.caption.replacingOccurrences(
-                of: "近 7 天",
-                with: "最近 \(actual.count) 天"
-            )
-        } else {
-            historyCaptionLabel.stringValue = resolved.caption
-        }
+        historyCaptionLabel.stringValue = resolved.caption
         historyRow.isHidden = !hasHistory
     }
 
