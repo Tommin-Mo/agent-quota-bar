@@ -206,7 +206,7 @@ final class SidebarButton: NSButton {
         super.draw(dirtyRect)
         guard selected else { return }
         Theme.accent.resolvedForAppearance().setFill()
-        NSBezierPath(roundedRect: NSRect(x: 4, y: 9, width: 2, height: bounds.height - 18), xRadius: 1, yRadius: 1).fill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 9, width: 3, height: bounds.height - 18), xRadius: 1.5, yRadius: 1.5).fill()
     }
 
     private func applyStyle() {

@@ -35,7 +35,7 @@ final class HistoryWindowController: NSWindowController {
         self.calendar = cal
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -55,7 +55,7 @@ final class HistoryWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError() }
 
     private func buildContent() -> NSView {
-        let root = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 640, height: 540))
+        let root = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 640, height: 520))
         root.wantsLayer = true
         root.surfaceColor = Theme.background
 
@@ -172,9 +172,9 @@ final class HistoryWindowController: NSWindowController {
         for (title, level) in items {
             let swatch = HistoryDayCell.swatch(for: level)
             swatch.translatesAutoresizingMaskIntoConstraints = false
-            swatch.widthAnchor.constraint(equalToConstant: 14).isActive = true
-            swatch.heightAnchor.constraint(equalToConstant: 14).isActive = true
-            let text = label(title, size: 10, color: Theme.tertiary)
+            swatch.widthAnchor.constraint(equalToConstant: 16).isActive = true
+            swatch.heightAnchor.constraint(equalToConstant: 16).isActive = true
+            let text = label(title, size: 11, color: Theme.secondary)
             legendRow.addArrangedSubview(swatch)
             legendRow.addArrangedSubview(text)
         }
@@ -398,9 +398,9 @@ private final class HistoryDayCell: NSView {
         layer?.cornerRadius = 9
         if let day, level == .none {
             // 未使用：不填绿色，只保留一个很轻的日期卡片边界。
-            layer?.backgroundColor = Theme.surface.withAlphaComponent(0.55).resolvedForAppearance().cgColor
+            layer?.backgroundColor = Theme.surface.withAlphaComponent(0.42).resolvedForAppearance().cgColor
             layer?.borderWidth = 0.5
-            layer?.borderColor = Theme.separator.withAlphaComponent(0.22).resolvedForAppearance().cgColor
+            layer?.borderColor = Theme.separator.withAlphaComponent(0.20).resolvedForAppearance().cgColor
         } else if day == nil {
             layer?.backgroundColor = NSColor.clear.cgColor
         } else {
@@ -440,9 +440,9 @@ private final class HistoryDayCell: NSView {
         v.wantsLayer = true
         v.layer?.cornerRadius = 4
         if level == .none {
-            v.layer?.backgroundColor = Theme.surface.withAlphaComponent(0.55).resolvedForAppearance().cgColor
+            v.layer?.backgroundColor = Theme.surface.withAlphaComponent(0.42).resolvedForAppearance().cgColor
             v.layer?.borderWidth = 0.5
-            v.layer?.borderColor = Theme.separator.withAlphaComponent(0.28).resolvedForAppearance().cgColor
+            v.layer?.borderColor = Theme.separator.withAlphaComponent(0.22).resolvedForAppearance().cgColor
         } else {
             v.layer?.backgroundColor = background(for: level).cgColor
         }
