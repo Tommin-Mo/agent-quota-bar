@@ -13,12 +13,14 @@ final class UsageTracker {
     private struct DeepSeekState: Codable {
         var lastBalance: Double
         var spent: Double
+        var identity: String?
         var updatedAt: String?
     }
 
     private struct ConsumedState: Codable {
         var baseline: Double
         var spent: Double
+        var identity: String?
         var updatedAt: String?
     }
 
@@ -27,10 +29,10 @@ final class UsageTracker {
         var deepseek: DeepSeekState?
         var trae: ConsumedState?
         var workbuddy: ConsumedState?
+        var spentByIdentity: [String: Double]? = nil
     }
 
     private let fileURL: URL
-    private let lock: NSDistributedLock?
     private var state: State
 
     private init() {
@@ -44,7 +46,6 @@ final class UsageTracker {
                 .appendingPathComponent(".config/agent-quota", isDirectory: true)
         }
         fileURL = directory.appendingPathComponent("usage.json")
-        lock = NSDistributedLock(path: fileURL.path + ".lock")
         if let data = try? Data(contentsOf: fileURL),
            let loaded = try? JSONDecoder().decode(State.self, from: data),
            loaded.day == Self.dayKey {
@@ -55,14 +56,8 @@ final class UsageTracker {
     }
 
     func record(snapshot: QuotaSnapshot, only: Set<String>? = nil) {
-        guard let lock else { return }
-        var acquired = false
-        for _ in 0..<100 {
-            if lock.try() { acquired = true; break }
-            usleep(20_000)
-        }
-        guard acquired else { return }
-        defer { lock.unlock() }
+        guard let fd = try? FileWriteLock.acquire(for: fileURL) else { return }
+        defer { close(fd) }
         reloadState()
 
         if state.day != Self.dayKey {
@@ -70,32 +65,36 @@ final class UsageTracker {
             state = State(day: Self.dayKey, deepseek: nil, trae: nil, workbuddy: nil)
         }
 
-        let stamp = snapshot.sampledAt ?? snapshot.updatedAt
-
+        func freshStamp(for provider: ProviderStatus, after stored: String?) -> String? {
+            let stamp = provider.sampledAt ?? snapshot.sampledAt ?? snapshot.updatedAt
+            guard let incoming = FlexibleDateParser.date(from: stamp), Calendar.current.isDateInToday(incoming),
+                  stored.flatMap(FlexibleDateParser.date(from:)).map({ incoming > $0 }) ?? true else { return nil }
+            return stamp
+        }
         if (only == nil || only!.contains("deepseek")),
            let deepseek = snapshot.providers.first(where: { $0.id == "deepseek" }),
-           let balance = deepseek.balance {
-            if var current = state.deepseek {
-                if Self.isNewer(stamp, than: current.updatedAt) {
-                    if balance < current.lastBalance {
-                        current.spent += current.lastBalance - balance
-                    }
-                    current.lastBalance = balance
-                    current.updatedAt = stamp
-                    state.deepseek = current
-                }
+           deepseek.isUsable, deepseek.cached != true, let balance = deepseek.balance,
+           let stamp = freshStamp(for: deepseek, after: state.deepseek?.updatedAt) {
+            if var current = state.deepseek, current.identity == deepseek.identity {
+                current.spent += max(0, current.lastBalance - balance)
+                current.lastBalance = balance
+                current.updatedAt = stamp
+                state.deepseek = current
             } else {
-                state.deepseek = DeepSeekState(lastBalance: balance, spent: 0, updatedAt: stamp)
+                state.deepseek = DeepSeekState(lastBalance: balance, spent: state.spentByIdentity?["deepseek:" + deepseek.identity] ?? 0, identity: deepseek.identity, updatedAt: stamp)
             }
+            if state.spentByIdentity == nil { state.spentByIdentity = [:] }
+            let spent = state.deepseek?.spent
+            state.spentByIdentity?["deepseek:" + deepseek.identity] = spent
         }
 
         for id in ["trae", "workbuddy"] {
             guard only == nil || only!.contains(id),
                   let provider = snapshot.providers.first(where: { $0.id == id }),
-                  let consumed = provider.consumed else { continue }
+                  provider.isUsable, provider.cached != true, let consumed = provider.consumed else { continue }
             let keyPath = id == "trae" ? \State.trae : \State.workbuddy
-            if var current = state[keyPath: keyPath] {
-                guard Self.isNewer(stamp, than: current.updatedAt) else { continue }
+            guard let stamp = freshStamp(for: provider, after: state[keyPath: keyPath]?.updatedAt) else { continue }
+            if var current = state[keyPath: keyPath], current.identity == provider.identity {
                 if consumed >= current.baseline {
                     // 套餐周期重置/过期套餐被移除时不能重算，否则今日消耗会从 200 掉到 5。
                     current.spent += max(0, consumed - current.baseline)
@@ -104,8 +103,11 @@ final class UsageTracker {
                 current.updatedAt = stamp
                 state[keyPath: keyPath] = current
             } else {
-                state[keyPath: keyPath] = ConsumedState(baseline: consumed, spent: 0, updatedAt: stamp)
+                state[keyPath: keyPath] = ConsumedState(baseline: consumed, spent: state.spentByIdentity?[id + ":" + provider.identity] ?? 0, identity: provider.identity, updatedAt: stamp)
             }
+            if state.spentByIdentity == nil { state.spentByIdentity = [:] }
+            let spent = state[keyPath: keyPath]?.spent
+            state.spentByIdentity?[id + ":" + provider.identity] = spent
         }
 
         save()
@@ -120,19 +122,6 @@ final class UsageTracker {
         case "workbuddy": return state.workbuddy?.spent
         default: return nil
         }
-    }
-
-    // MARK: - 快照顺序判断
-
-    /// 新快照的 `updatedAt` 是否严格晚于已记录的时间。
-    /// 两个时间都能解析时按时间比较；否则退化为 ISO8601 字符串的字典序（同格式下等价）。
-    private static func isNewer(_ incoming: String, than stored: String?) -> Bool {
-        guard let stored else { return true }
-        if let new = ISO8601DateFormatter.flexible.date(from: incoming),
-           let old = ISO8601DateFormatter.flexible.date(from: stored) {
-            return new > old
-        }
-        return incoming > stored
     }
 
     private func reloadState() {

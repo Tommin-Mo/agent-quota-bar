@@ -1,5 +1,25 @@
 import AppKit
 
+if CommandLine.arguments.dropFirst().elementsEqual(["--read-doubao-quota"]) {
+    let reader = NSApplication.shared
+    reader.setActivationPolicy(.prohibited)
+    Task {
+        print(await DoubaoQuota.read())
+        exit(0)
+    }
+    reader.run()
+}
+
+// A reidentified preview reopened by Launch Services loses its fixture environment.
+if Bundle.main.bundleIdentifier != "com.tommin.agentquotabar",
+   Bundle.main.bundleURL.pathExtension == "app",
+   (ProcessInfo.processInfo.environment["AGENT_QUOTA_CONFIG"] == nil ||
+    ProcessInfo.processInfo.environment["AGENT_QUOTA_COLLECTOR"] == nil) {
+    NSLog("AgentQuotaBar: refusing reidentified bundle %@; set AGENT_QUOTA_CONFIG and AGENT_QUOTA_COLLECTOR for previews.",
+          Bundle.main.bundleIdentifier ?? "<nil>")
+    exit(1)
+}
+
 if CommandLine.arguments.contains("--usage-sample") {
     UsageSampler.run()
     exit(0)
@@ -29,6 +49,7 @@ appMenu.addItem(
     action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
     keyEquivalent: ""
 )
+appMenu.addItem(withTitle: "设置…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",").target = delegate
 appMenu.addItem(.separator())
 appMenu.addItem(withTitle: "退出 Agent 额度", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 appItem.submenu = appMenu

@@ -9,6 +9,17 @@ struct QuotaSnapshot: Codable {
     let sampledAt: String?
     let providers: [ProviderStatus]
 
+    func currentAccounts(in providersConfig: [String: Any]) -> QuotaSnapshot {
+        let rows = providers.filter { row in
+            let config = providersConfig[row.id] as? [String: Any] ?? [:]
+            let identity = ["activeAccount", "quotaRevision"].compactMap { config[$0] as? String }
+                .filter { !$0.isEmpty }.joined(separator: ":")
+            return (row.localAccountID ?? "") == identity &&
+                (row.selectionRevision ?? "") == (config["selectionRevision"] as? String ?? "")
+        }
+        return QuotaSnapshot(schema: schema, updatedAt: updatedAt, sampledAt: sampledAt, providers: rows)
+    }
+
     var updatedDate: Date? {
         ISO8601DateFormatter.flexible.date(from: updatedAt)
     }
@@ -46,6 +57,11 @@ struct ProviderStatus: Codable, Identifiable {
     let serviceStatus: String?
     let serviceStatusDescription: String?
 
+    var sampledAt: String? = nil
+    var cached: Bool? = nil
+    var localAccountID: String? = nil
+    var selectionRevision: String? = nil
+    var identity: String { [localAccountID ?? "", account ?? "", creditMetric?.currency ?? ""].joined(separator: "|") }
     var isUsable: Bool { status == "ok" || status == "warn" }
 }
 
@@ -57,6 +73,25 @@ struct QuotaMetric: Codable, Identifiable {
     let resetAt: Double?
     let currency: String?
     let headlineValue: String?
+    enum Value: Codable {
+        case number(Double)
+        case text(String)
+
+        init(from decoder: Decoder) throws {
+            let scalar = try decoder.singleValueContainer()
+            if let number = try? scalar.decode(Double.self) { self = .number(number) }
+            else { self = .text(try scalar.decode(String.self)) }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var scalar = encoder.singleValueContainer()
+            switch self {
+            case .number(let value): try scalar.encode(value)
+            case .text(let value): try scalar.encode(value)
+            }
+        }
+    }
+    var value: Value? = nil
     let detail: String?
 
     var id: String { "\(label)-\(kind)-\(headlineValue ?? "")-\(usedPercent ?? 0)" }
@@ -234,6 +269,62 @@ struct UsageHistoryEntry: Codable, Equatable, Identifiable {
     var account: String?
     var plan: String?
     var updatedAt: String?
+    var identity: String?
+    var dailyDelta: Double?
+    var dailyTotals: [String: Double]?
+    var deltaUnit: String?
+    var costCurrency: String?
+    var activeIntervals: Int?
+    var windows: [String: Double]?
+
+    struct WalletSample: Codable, Equatable {
+        var balance: Double?
+        var consumed: Double?
+    }
+    var walletSamples: [String: WalletSample]?
+    var openingBalances: [String: Double]?
+    var balanceUnit: String?
+    var referenceWindow: String?
+    var windowEnds: [String: Double]?
+
+    var recordedDailyTotals: [String: Double] {
+        if let dailyTotals, !dailyTotals.isEmpty { return dailyTotals }
+        if let dailyDelta, let deltaUnit { return [deltaUnit: dailyDelta] }
+        return [:]
+    }
+
+    var consumptionPercent: Double? {
+        let totals = recordedDailyTotals
+        if let unit = balanceUnit {
+            guard let amount = totals[unit], let openings = openingBalances,
+                  !openings.isEmpty, openings.values.allSatisfy({ $0 > 0 }) else { return nil }
+            return amount / openings.values.reduce(0, +) * 100
+        }
+        guard balance == nil else { return nil }
+        let periods = totals.keys.filter { $0.hasPrefix("周期：") && !$0.dropFirst(3).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.sorted()
+        let unit = referenceWindow.map { "周期：" + $0 } ?? (periods.contains("周期：本周") ? "周期：本周" : periods.first)
+        guard let unit, periods.contains(unit) else { return nil }
+        return totals[unit]
+    }
+
+    static func averageConsumption(_ records: [Self]) -> Double? {
+        let values = records.compactMap(\.consumptionPercent)
+        guard !values.isEmpty else { return nil }
+        let mean = values.reduce(0, +) / Double(values.count)
+        return (mean * 1_000_000_000).rounded() / 1_000_000_000
+    }
+
+    var hasQuotaSpend: Bool {
+        (dailyTotals ?? [:]).values.contains { $0 > 0 } || (dailyDelta ?? 0) > 0 || (cost ?? 0) > 0
+    }
+
+    var hasObservation: Bool { dailyTotals?.isEmpty == false || dailyDelta != nil || cost != nil || tokens != nil }
+    var observedZero: Bool {
+        (dailyTotals?.isEmpty == false || dailyDelta != nil) && activity == 0 && (dailyTotals ?? [:]).values.allSatisfy { $0 == 0 } && (dailyDelta ?? 0) == 0 && (cost ?? 0) == 0 && (tokens?.total ?? 0) == 0
+    }
+    var activity: Int {
+        max(activeIntervals ?? 0, (cost ?? 0) > 0 || (tokens?.total ?? 0) > 0 || (dailyDelta ?? 0) > 0 ? 1 : 0)
+    }
 
     var id: String { "\(date)::\(provider)" }
 
@@ -378,109 +469,35 @@ extension QuotaSnapshot {
 
     /// 最紧张的一家（只考虑有百分比/余额的正常数据）。
     func worstProviderID() -> String? {
-        let percent = providers
-            .filter(\.isUsable)
-            .compactMap { provider -> (String, Double)? in
-                let values = provider.metrics
-                    .filter { $0.kind == "percent" }
-                    .compactMap(\.remainingPercent)
-                guard let value = values.min() else { return nil }
-                return (provider.id, value)
-            }
-            .min(by: { $0.1 < $1.1 })
-        if let percent { return percent.0 }
-        return providers.first(where: { $0.isUsable && !$0.metrics.isEmpty })?.id
+        mostUrgent.first?.id
+    }
+
+    var mostUrgent: [ProviderStatus] {
+        let eligible = providers.filter { $0.isUsable && $0.cached != true && $0.riskMetric != nil }
+        guard let first = eligible.min(by: { ($0.riskTier, $0.riskScore) < ($1.riskTier, $1.riskScore) }) else { return [] }
+        return eligible.filter { $0.riskTier == first.riskTier && $0.riskScore == first.riskScore }.sorted { $0.id < $1.id }
+    }
+
+    var riskSummary: String {
+        let urgent = mostUrgent
+        guard let first = urgent.first else { return "" }
+        if first.riskTier == 3 { return "当前可判断的服务均未触发警戒" }
+        if urgent.count == 1 { return "\(first.name) · \(first.riskDescription)" }
+        return first.riskTier == 0 ? "\(urgent.count) 家已耗尽" : "\(urgent.count) 家并列紧张"
     }
 
     func menuBarItem(for providerID: String) -> MenuBarItem? {
         guard let provider = provider(withID: providerID) else { return nil }
-        let style = ProviderStyles.style(for: provider.id)
-        let tooltip = summaryTooltip()
-
-        if let percent = provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent {
-            return MenuBarItem(
-                providerID: provider.id,
-                value: "\(Int(min(99, max(0, percent.rounded()))))",
-                remaining: percent,
-                severity: QuotaSeverity.from(remaining: percent),
-                tooltip: tooltip
-            )
-        }
-        if let credit = provider.metrics.first(where: { $0.kind == "credit" }) {
-            let amount = credit.headlineValue ?? "—"
-            return MenuBarItem(
-                providerID: provider.id,
-                value: fullCredit(credit.headlineValue ?? "", currency: credit.currency ?? ""),
-                remaining: nil,
-                severity: .neutral,
-                tooltip: tooltip
-            )
-        }
-        if provider.metrics.contains(where: { $0.kind == "text" }) {
-            return MenuBarItem(
-                providerID: provider.id,
-                value: "—",
-                remaining: nil,
-                severity: .neutral,
-                tooltip: tooltip
-            )
-        }
-        return MenuBarItem(
-            providerID: provider.id,
-            value: provider.status == "error" ? "!" : "—",
-            remaining: nil,
-            severity: provider.status == "error" ? .critical : .neutral,
-            tooltip: tooltip
-        )
-    }
-
-    private func fullCredit(_ headline: String, currency: String) -> String {
-        let symbol: String
-        if currency == "USD" || headline.hasPrefix("$") { symbol = "$" }
-        else if headline.hasPrefix("¥") || currency == "CNY" { symbol = "¥" }
-        else { symbol = "" }
-        let digits = headline.filter { $0.isNumber || $0 == "." }
-        guard let value = Double(digits) else { return symbol.isEmpty ? "—" : symbol }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = value < 100 ? 2 : 0
-        formatter.minimumFractionDigits = 0
-        let text = formatter.string(from: NSNumber(value: value)) ?? "\(Int(value))"
-        return symbol + text
-    }
-
-    private func compactCredit(_ headline: String, currency: String) -> String {
-        let symbol: String
-        if currency == "USD" || headline.hasPrefix("$") { symbol = "$" }
-        else if headline.hasPrefix("¥") || currency == "CNY" { symbol = "¥" }
-        else { symbol = "" }
-        let digits = headline.filter { $0.isNumber || $0 == "." }
-        guard let value = Double(digits) else { return symbol.isEmpty ? "—" : symbol }
-        if value < 1000 {
-            return symbol + "\(Int(value))"
-        }
-        if value < 10000 {
-            return symbol + String(format: "%.1fk", value / 1000)
-        }
-        return symbol + String(format: "%.0fk", value / 1000)
+        let metric = provider.riskMetric
+        let value = metric?.remainingPercent.map(quotaPercentText)
+            ?? metric.map(provider.valueText) ?? ""
+        return MenuBarItem(providerID: provider.id, value: value, remaining: metric?.remainingPercent,
+                           severity: provider.cached == true ? .neutral : provider.health, tooltip: summaryTooltip())
     }
 
     func summaryTooltip() -> String {
-        providers
-            .filter { $0.status != "disabled" }
-            .map { provider in
-                let name = ProviderStyles.style(for: provider.id).shortName
-                if let percent = provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent {
-                    return "\(name) \(Int(percent.rounded()))%"
-                }
-                if let credit = provider.metrics.first(where: { $0.kind == "credit" }) {
-                    return "\(name) \(credit.headlineValue ?? "--")"
-                }
-                if let text = provider.metrics.first(where: { $0.kind == "text" })?.headlineValue {
-                    return "\(name) \(text)"
-                }
-                return "\(name) \(provider.status == "error" ? "出错" : "未配置")"
-            }
-            .joined(separator: " · ")
+        providers.filter { $0.status != "disabled" }.map { provider in
+            "\(provider.name) · \(provider.riskDescription)" + (provider.cached == true ? "（缓存）" : "")
+        }.joined(separator: " · ")
     }
 }

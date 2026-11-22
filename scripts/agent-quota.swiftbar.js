@@ -16,34 +16,21 @@ const result = spawnSync(process.execPath, [path.join(root, 'scripts/quota'), 's
 });
 let data;
 try { data = JSON.parse(result.stdout || '{}'); } catch {}
-const providers = Array.isArray(data?.providers) ? data.providers : [];
-const percent = providers
-  .map((p) => {
-    const m = (p.metrics || []).find((x) => x.kind === 'percent');
-    if (!m || typeof m.remainingPercent !== 'number') return null;
-    return { id: p.id, name: p.name, remaining: m.remainingPercent, reset: m.detail || '' };
-  })
-  .filter(Boolean)
-  .sort((a, b) => a.remaining - b.remaining);
-const credit = providers
-  .map((p) => {
-    const m = (p.metrics || []).find((x) => x.kind === 'credit');
-    if (!m || !m.headlineValue) return null;
-    return { id: p.id, name: p.name, value: m.headlineValue };
-  })
-  .filter(Boolean)[0];
-const worst = percent[0];
-const label = worst
-  ? `${worst.name} ${Math.round(worst.remaining)}%`
-  : (credit ? `${credit.name} ${credit.value}` : (data?.ok === false ? '额度读取失败' : '暂无额度'));
-console.log(label);
-console.log('---');
-for (const p of providers) {
-  const m = (p.metrics || []).find((x) => x.kind === 'percent');
-  const c = (p.metrics || []).find((x) => x.kind === 'credit');
-  const value = m ? `剩 ${Math.round(m.remainingPercent)}%${m.detail ? ' · ' + m.detail : ''}` : (c?.headlineValue ? `余额 ${c.headlineValue}` : (p.headline || ''));
-  console.log(`${p.name}: ${value}`);
+const providers = (data?.providers || []).filter(p => p.status !== 'disabled' && p.presentation?.visible !== false);
+const ranked = providers.filter(p => Number.isFinite(p.presentation?.score))
+  .sort((a, b) => a.presentation.tier - b.presentation.tier || a.presentation.score - b.presentation.score || a.id.localeCompare(b.id));
+const leaders = ranked.filter(p => p.presentation.tier === ranked[0].presentation.tier && p.presentation.score === ranked[0].presentation.score);
+const failed = result.status !== 0 || data?.ok === false || !Array.isArray(data?.providers);
+let summary = failed ? '额度读取失败' : providers.length ? '暂无可比较额度' : '没有启用的服务';
+if (!failed && leaders.length) {
+  const first = leaders[0];
+  if (first.presentation.tier === 3) summary = '额度未触发警戒';
+  else if (leaders.length === 1) summary = first.name + ' ' + first.presentation.risk;
+  else summary = leaders.length + (first.presentation.tier === 0 ? ' 家已耗尽' : ' 家并列紧张');
 }
+console.log(summary);
+console.log('---');
+for (const p of providers) console.log(p.name + ': ' + (p.presentation?.primary || '暂无额度数据'));
 console.log('---');
 console.log('立即刷新 | refresh=true');
 console.log('打开 AgentQuotaBar | bash=/usr/bin/open param1=/Applications/AgentQuotaBar.app');

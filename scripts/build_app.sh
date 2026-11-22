@@ -5,8 +5,8 @@ set -euo pipefail
 # Info.plist 的 CFBundleShortVersionString / CFBundleVersion 由这两个变量生成。
 # 注意：设置窗口左上角的 "v0.4" 仍是 Swift 源码里的静态文案
 # （SettingsWindowController.swift），不归本脚本管，发版时需同步。
-VERSION="0.4.0"
-BUILD="4"
+VERSION="0.8.1"
+BUILD="32"
 
 BUNDLE_ID="com.tommin.agentquotabar"
 
@@ -110,7 +110,7 @@ cat > "$WIDGET/Contents/Info.plist" <<WPLIST
 WPLIST
 
 # collector 运行时用 __dirname 找 workbuddy-key，必须整个目录进 Resources
-cp "$ROOT/collector/collector.js" "$ROOT/collector/trae-crypto.js" "$STAGE/Contents/Resources/"
+cp "$ROOT/collector/collector.js" "$ROOT/collector/trae-crypto.js" "$ROOT/collector/local-agents.js" "$STAGE/Contents/Resources/"
 [ -d "$ROOT/collector/workbuddy-key" ] || fail "missing collector/workbuddy-key (WorkBuddy key helper)"
 cp -R "$ROOT/collector/workbuddy-key" "$STAGE/Contents/Resources/workbuddy-key"
 for file in main.js package.json; do
@@ -122,12 +122,10 @@ cp "$RES_SRC/checkin-background.sh" "$STAGE/Contents/Resources/"
 chmod +x "$STAGE/Contents/Resources/checkin-background.sh"
 cp "$RES_SRC/AppIcon.icns" "$STAGE/Contents/Resources/"
 
-# logo 资源必须显式校验，不能用 `|| true` 把 glob 失败吞掉
-shopt -s nullglob
-logos=("$RES_SRC"/*.svg "$RES_SRC"/*.png)
-shopt -u nullglob
-[ "${#logos[@]}" -gt 0 ] || fail "no logo assets (*.svg/*.png) found in Resources/"
-cp "${logos[@]}" "$STAGE/Contents/Resources/"
+for id in codex opencode deepseek trae workbuddy doubao; do
+  [ -s "$RES_SRC/TheSVG/$id.svg" ] || fail "missing theSVG mark for $id"
+done
+cp -R "$RES_SRC/TheSVG" "$STAGE/Contents/Resources/TheSVG"
 
 cat > "$STAGE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

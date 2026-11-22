@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private let providerID: String
@@ -9,6 +10,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private var fields: [String: NSTextField] = [:]
     private var loginWindows: [WebLoginWindowController] = []
     private let statusLabel = NSTextField(labelWithString: "")
+    private var validationRevision = UUID()
     private let saveButton = NSButton()
     private let container = ThemedSurfaceView()
     private let stack = NSStackView()
@@ -18,6 +20,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private var manualGroup: NSView?
     private var manualToggle: NSButton?
     private var traePopup: NSPopUpButton?
+    private weak var actionText: NSTextField?
+    private weak var actionButton: NSButton?
+    private weak var browserButton: NSButton?
     private var startZen = false
 
     private var style: ProviderStyle { ProviderStyles.style(for: providerID) }
@@ -76,7 +81,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -28),
         ])
 
-        stack.addArrangedSubview(header())
+        let heading = header()
+        stack.addArrangedSubview(heading)
+        heading.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
 
         if isAutomaticProvider {
             let info = infoCard()
@@ -103,14 +110,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func header() -> NSView {
-        let badge = AvatarView(letter: style.letter, color: style.color, size: 36, provider: providerID)
-        let title = label(style.shortName, size: 20, weight: .bold)
+        let badge = ProviderMarkView(provider: providerID, size: 36)
+        let title = label(style.shortName, size: 24, weight: .bold)
         let subtitle = label(headerSubtitle(), size: 11, color: Theme.secondary)
         let info = NSStackView(views: [title, subtitle])
         info.orientation = .vertical
         info.alignment = .leading
         info.spacing = 3
-        let row = NSStackView(views: [badge, info])
+        let row = NSStackView(views: [badge, info, NSView()])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 14
@@ -144,16 +151,20 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         ])
 
         let desc = wrappingLabel(actionDescription(), size: 11.5, color: Theme.secondary, width: 450)
+        actionText = desc
         desc.alignment = .center
         panel.addArrangedSubview(desc)
 
         let primary = NSButton(title: primaryActionTitle(), target: self, action: #selector(primaryAction))
+        actionButton = primary
         primary.bezelStyle = .rounded
         primary.controlSize = .large
         primary.bezelColor = Theme.accent
         primary.keyEquivalent = "\r"
 
         let browser = NSButton(title: "用浏览器打开", target: self, action: #selector(openPage))
+        browserButton = browser
+        browser.isHidden = providerID == "deepseek" || (providerID == "opencode" && !startZen)
         browser.bezelStyle = .inline
         browser.isBordered = false
         browser.contentTintColor = Theme.secondary
@@ -208,7 +219,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             zen.spacing = 12
             zen.addArrangedSubview(fieldGroup(title: "Console Cookie（__Host-console_session）",
                                               key: "providers.opencode.cookie",
-                                              placeholder: "已保存（安全输入，可重新粘贴）", secure: true))
+                                              placeholder: "粘贴 Zen Cookie", secure: true))
             zen.addArrangedSubview(fieldGroup(title: "Workspace ID（可选）", key: "providers.opencode.workspaceId",
                                               placeholder: "wrk_...，留空自动获取", secure: false))
             zenGroup = zen
@@ -243,7 +254,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             rows.append(auth)
 
             if let error = codexCurrentError() {
-                let errorLabel = label(ProviderErrorText.display(error), size: 10.5, color: .systemOrange)
+                let errorLabel = label(ProviderErrorText.display(error), size: 10.5, color: Theme.warning)
                 errorLabel.maximumNumberOfLines = 2
                 errorLabel.lineBreakMode = .byWordWrapping
                 errorLabel.preferredMaxLayoutWidth = 450
@@ -262,8 +273,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
         if providerID == "trae" {
             let popup = NSPopUpButton()
-            for (code, title) in [("cn", "Trae CN（国内版）"), ("solo", "TRAE SOLO CN"),
-                                  ("sg", "Trae（国际版）"), ("solo-sg", "TRAE SOLO（国际版）")] {
+            popup.bezelStyle = .texturedRounded
+            for (code, title) in ProviderRegistry.traeEditions {
                 popup.addItem(withTitle: title)
                 popup.lastItem?.representedObject = code
             }
@@ -321,8 +332,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         let titleLabel = label(title, size: 10.5, color: Theme.secondary)
         let field: NSTextField = secure ? NSSecureTextField() : NSTextField()
         field.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular)
-        field.placeholderString = placeholder
-        field.stringValue = service.config.string(key)
+        let stored = service.config.string(key)
+        field.placeholderString = secure && !stored.isEmpty ? "已保存，留空保留" : placeholder
+        field.stringValue = secure ? "" : stored
         field.setAccessibilityLabel(title)
         field.translatesAutoresizingMaskIntoConstraints = false
         field.heightAnchor.constraint(equalToConstant: 26).isActive = true
@@ -415,7 +427,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         let panel = NSOpenPanel()
         panel.title = "选择 Codex auth.json"
-        panel.allowedFileTypes = ["json"]
+        panel.message = "验证成功后导入至 " + codexAuthPath().path + "，原文件保留备份。"
+        panel.allowedContentTypes = [.json]
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.beginSheetModal(for: window) { [weak self] response in
@@ -426,26 +439,81 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
                   let access = tokens["access_token"] as? String,
                   !access.isEmpty
             else {
-                self.showStatus("不是有效的 Codex auth.json", color: .systemRed)
+                self.showStatus("不是有效的 Codex auth.json", color: Theme.danger)
                 return
             }
-            let fm = FileManager.default
             let destination = self.codexAuthPath()
-            let directory = destination.deletingLastPathComponent()
-            do {
-                try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-                if fm.fileExists(atPath: destination.path) {
-                    let backup = directory.appendingPathComponent("auth.json.agent-quota.bak")
-                    try? fm.removeItem(at: backup)
-                    try? fm.copyItem(at: destination, to: backup)
+            let original = try? Data(contentsOf: destination)
+            let selection = self.service.config.string("providers.codex.selectionRevision")
+            let revision = UUID()
+            self.validationRevision = revision
+            self.showStatus("正在验证候选登录文件…", color: Theme.secondary)
+            self.service.verify(provider: "codex", candidate: ["enabled": true, "authPath": source.path]) { [weak self] result in
+                guard let self, self.validationRevision == revision else { return }
+                guard case .success(let status) = result, status.isUsable,
+                      self.codexAuthPath() == destination,
+                      self.service.config.string("providers.codex.selectionRevision") == selection,
+                      (try? Data(contentsOf: destination)) == original,
+                      (try? Data(contentsOf: source)) == data else {
+                    self.showStatus("登录文件验证失败或账户已变更，原文件已保留", color: Theme.danger)
+                    return
                 }
-                try data.write(to: destination, options: .atomic)
-                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
-                self.showStatus("✓ 已导入 Codex 登录态，正在重新检测", color: .systemGreen)
-                self.onSaved()
-            } catch {
-                self.showStatus("导入失败：\(error.localizedDescription)", color: .systemRed)
+                do {
+                    try Self.installVerifiedLogin(data, at: destination) {
+                        try self.service.config.withRollback {
+                            self.service.config.set("providers.codex.quotaRevision", UUID().uuidString)
+                            try self.service.config.save()
+                        }
+                    }
+                    self.showStatus("✓ 已导入验证通过的登录文件", color: Theme.success)
+                    self.onSaved()
+                } catch {
+                    self.showStatus("导入失败，请检查文件和备份的写入权限", color: Theme.danger)
+                }
             }
+        }
+    }
+
+    static func installVerifiedLogin(_ data: Data, at destination: URL, commit: () throws -> Void = {}) throws {
+        let fm = FileManager.default
+        let parent = destination.deletingLastPathComponent()
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let staging = parent.appendingPathComponent(".agent-quota-" + UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? fm.removeItem(at: staging) }
+        func stage(_ contents: Data, name: String) throws -> URL {
+            let file = staging.appendingPathComponent(name)
+            try contents.write(to: file)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            return file
+        }
+        func replace(_ file: URL, _ target: URL) throws {
+            guard rename(file.path, target.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        }
+        let next = try stage(data, name: "candidate")
+        let backup = destination.appendingPathExtension("agent-quota.bak")
+        var rollback: URL?
+        var earlierBackup: URL?
+        if fm.fileExists(atPath: destination.path) {
+            let previous = try Data(contentsOf: destination)
+            if previous == data { return }
+            rollback = try stage(previous, name: "original")
+            if fm.fileExists(atPath: backup.path) {
+                earlierBackup = try stage(Data(contentsOf: backup), name: "prior-backup")
+            }
+            try replace(try stage(previous, name: "backup"), backup)
+        }
+        do {
+            try replace(next, destination)
+            do { try commit() }
+            catch {
+                if let rollback { try replace(rollback, destination) } else { try fm.removeItem(at: destination) }
+                throw error
+            }
+        } catch {
+            if let earlierBackup { try replace(earlierBackup, backup) }
+            else if rollback != nil { try fm.removeItem(at: backup) }
+            throw error
         }
     }
 
@@ -549,7 +617,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             segmented?.selectedSegment = 1
             openCodeModeChanged()
         }
-        showStatus("✓ 已自动获取并保存", color: .systemGreen)
+        showStatus("✓ 已自动获取并保存", color: Theme.success)
         onSaved()
     }
 
@@ -561,13 +629,18 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
 
+    private var currentPage: String? {
+        if providerID == "opencode" && !startZen { return "https://opencode.ai/go" }
+        return openURLs[providerID]
+    }
+
     @objc private func openPage() {
-        guard let urlString = openURLs[providerID], let url = URL(string: urlString) else { return }
+        guard let urlString = currentPage, let url = URL(string: urlString) else { return }
         NSWorkspace.shared.open(url)
     }
 
     @objc private func copySteps() {
-        let url = openURLs[providerID] ?? ""
+        let url = currentPage ?? ""
         let text = stepsText() + "\n\n页面：\(url)"
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -600,7 +673,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func pasteFromClipboard() {
-        guard var text = NSPasteboard.general.string(forType: .string) else { return }
+        pasteCredential(from: .general)
+    }
+
+    func pasteCredential(from board: NSPasteboard) {
+        guard var text = board.string(forType: .string), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            showStatus("剪贴板中没有可粘贴的文本", color: Theme.warning)
+            return
+        }
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.lowercased().hasPrefix("bearer ") {
             text = String(text.dropFirst(7)).trimmingCharacters(in: .whitespaces)
@@ -620,12 +700,17 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             manualToggle?.title = "收起手动填写"
             resizeWindowToFit()
         }
+        guard !text.isEmpty else { showStatus("剪贴板中没有可粘贴的文本", color: Theme.warning); return }
         fields[key]?.stringValue = text
-        showStatus(text.isEmpty ? "剪贴板是空的" : "已从剪贴板粘贴", color: Theme.secondary)
+        showStatus("已从剪贴板粘贴", color: Theme.secondary)
     }
 
     @objc private func openCodeModeChanged() {
         let goMode = (segmented?.selectedSegment ?? 0) == 0
+        startZen = !goMode
+        actionText?.stringValue = actionDescription()
+        actionButton?.title = primaryActionTitle()
+        browserButton?.isHidden = goMode
         goGroup?.isHidden = !goMode
         zenGroup?.isHidden = goMode
         resizeWindowToFit()
@@ -645,51 +730,73 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         for (key, field) in fields {
             // 空白表示“保留原值”，避免打开配置页点保存就把已有密钥清空。
             let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !value.isEmpty else { continue }
-            config.set(key, value)
+            guard !value.isEmpty || key.hasSuffix(".workspaceId") || key.hasSuffix(".uid") else { continue }
+            if providerID == "opencode" && ((startZen && key.hasSuffix(".apiKey")) || (!startZen && !key.hasSuffix(".apiKey"))) { continue }
             if key.hasPrefix(prefix) { changed[String(key.dropFirst(prefix.count))] = value }
         }
         if providerID == "opencode" {
-            config.set("providers.opencode.mode", (segmented?.selectedSegment ?? 0) == 0 ? "go" : "zen")
+            changed["mode"] = startZen ? "zen" : "go"
         }
         if providerID == "trae", let popup = traePopup {
             let edition = popup.selectedItem?.representedObject as? String ?? "cn"
-            config.set("providers.trae.edition", edition)
             changed["edition"] = edition
         }
-        // 有持久账号时同时写回账号记录，避免下次“设为当前”把新凭据覆盖回旧值。
-        let accountStore = AccountStore(config: config)
-        if !changed.isEmpty,
-           let active = accountStore.activeAccount(for: providerID),
-           !active.isLegacy {
-            var updated = active
-            updated.credentials.merge(changed) { _, new in new }
-            try? accountStore.updateAccount(updated, for: providerID)
-        }
-        do {
-            try config.save()
-        } catch {
-            showStatus("保存失败：\(error.localizedDescription)", color: .systemRed)
-            return
-        }
+        var candidate = config.dictionary("providers." + providerID) ?? [:]
+        let accountID = AccountStore(config: config).activeAccountID(for: providerID)
+        for (key, value) in changed { candidate[key] = value }
 
+        let revision = UUID()
+        validationRevision = revision
+        let draft = fields.mapValues(\.stringValue)
+        let mode = startZen
+        let edition = traePopup?.indexOfSelectedItem
+        let selection = config.string(prefix + "selectionRevision")
+        let sourceRevision = config.string(prefix + "quotaRevision")
+        candidate["enabled"] = true
         showStatus("正在验证…", color: Theme.secondary)
         saveButton.isEnabled = false
-        service.verify(provider: providerID) { [weak self] result in
-            guard let self else { return }
+        service.verify(provider: providerID, candidate: candidate) { [weak self] result in
+            guard let self, self.validationRevision == revision else { return }
             self.saveButton.isEnabled = true
+            guard self.fields.mapValues(\.stringValue) == draft, self.startZen == mode,
+                  self.traePopup?.indexOfSelectedItem == edition,
+                  config.string(prefix + "selectionRevision") == selection,
+                  config.string(prefix + "quotaRevision") == sourceRevision else {
+                self.showStatus("输入或当前账户已变更，请重新验证", color: Theme.warning)
+                return
+            }
             switch result {
             case .success(let status):
                 if status.status == "ok" || status.status == "warn" {
-                    let value = status.headline ?? status.detail ?? "已连接"
-                    self.showStatus("✓ 已连接 · \(value)", color: status.status == "warn" ? .systemOrange : .systemGreen)
+                    let store = AccountStore(config: config)
+                    guard store.activeAccountID(for: self.providerID) == accountID else {
+                        self.showStatus("当前账户已变更，请重新验证", color: Theme.warning)
+                        return
+                    }
+                    do {
+                        try config.withRollback {
+                            if changed.contains(where: { key, value in
+                                config.string(prefix + key) != value
+                            }) { config.set(prefix + "quotaRevision", UUID().uuidString) }
+                            for (key, value) in changed { config.set(prefix + key, value) }
+                            if !changed.isEmpty, var active = store.activeAccount(for: self.providerID), !active.isLegacy {
+                                active.credentials.merge(changed) { _, new in new }
+                                try store.updateAccount(active, for: self.providerID)
+                            } else if !changed.isEmpty { try config.save() }
+                        }
+                    } catch {
+                        self.showStatus("配置保存失败", color: Theme.danger)
+                        return
+                    }
+                    let value = status.primaryMetric.map(status.valueText) ?? status.detail ?? "已连接"
+                    self.showStatus("✓ 已连接 · \(value)", color: status.status == "warn" ? Theme.warning : Theme.success)
                     self.onSaved()
                 } else {
                     let summary = ProviderErrorText.display(status.error ?? status.detail)
-                    self.showStatus("✗ " + summary, color: .systemRed)
+                    self.showStatus("✗ " + summary, color: Theme.danger)
                 }
             case .failure(let error):
-                self.showStatus("✗ " + error.localizedDescription, color: .systemRed)
+                self.showStatus("✗ " + error.localizedDescription, color: Theme.danger)
             }
         }
     }
@@ -701,6 +808,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        validationRevision = UUID()
+        saveButton.isEnabled = true
         onClose?()
     }
 }

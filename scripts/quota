@@ -325,9 +325,9 @@ function cmdHistory(opts) {
     return;
   }
 
-  // App 的 HistoryStore 文件（近 7 天，额度/余额/成本），优先展示
+  // App 的 HistoryStore 文件（近 35 天，额度/余额/成本），优先展示
   const appRaw = readJson(HISTORY_FILE);
-  const app = { path: HISTORY_FILE, available: false, retentionDays: 7, entries: [] };
+  const app = { path: HISTORY_FILE, available: false, retentionDays: 35, entries: [] };
   if (appRaw) {
     const entries = Array.isArray(appRaw)
       ? appRaw

@@ -11,17 +11,23 @@ enum UsageSampler {
     static let sampledProviderIDs = ["deepseek", "trae", "workbuddy"]
 
     static func run() {
-        guard !guiAppIsRunning() else { return }
+        guard LaunchAgentInstaller.ownsBackgroundTasks, !guiAppIsRunning() else { return }
         // 不用 ConfigStore()：它的 init 会“修复”损坏配置并写默认值，
         // 后台进程抢在 App 前面跑时会让用户看不到损坏提示。
         guard let snapshot = try? QuotaService.fetchSnapshot(
             configPath: ConfigStore.defaultURL.path,
             only: sampledProviderIDs
         ) else { return }
-        UsageTracker.shared.record(snapshot: snapshot, only: Set(sampledProviderIDs))
+        guard let data = try? Data(contentsOf: ConfigStore.defaultURL),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let current = snapshot.currentAccounts(in: config["providers"] as? [String: Any] ?? [:])
+        guard !current.providers.isEmpty else { return }
+        UsageTracker.shared.record(snapshot: current, only: Set(sampledProviderIDs))
+        HistoryStore.shared.record(snapshot: current, only: Set(sampledProviderIDs))
     }
 
     static func installIfNeeded() {
+        guard LaunchAgentInstaller.ownsBackgroundTasks else { return }
         guard let executable = Bundle.main.executableURL else { return }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let support = home.appendingPathComponent(".config/agent-quota", isDirectory: true)
@@ -43,6 +49,7 @@ enum UsageSampler {
     }
 
     static func uninstall() {
+        guard LaunchAgentInstaller.ownsBackgroundTasks else { return }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let plistURL = home.appendingPathComponent("Library/LaunchAgents/\(label).plist")
         LaunchAgentInstaller.uninstall(label: label, plistURL: plistURL)
@@ -60,6 +67,12 @@ enum UsageSampler {
 /// LaunchAgent 的公共安装逻辑：内容没变且已加载时完全不动，避免每次启动都
 /// 重写 plist + bootout/bootstrap 阻塞调用线程。
 enum LaunchAgentInstaller {
+    static var ownsBackgroundTasks: Bool {
+        Bundle.main.bundleIdentifier == "com.tommin.agentquotabar"
+            && Bundle.main.bundleURL.standardizedFileURL.path == "/Applications/AgentQuotaBar.app"
+            && ProcessInfo.processInfo.environment["AGENT_QUOTA_CONFIG"] == nil
+    }
+
     static func install(label: String, payload: [String: Any], plistURL: URL) {
         let fileManager = FileManager.default
         try? fileManager.createDirectory(
@@ -74,7 +87,7 @@ enum LaunchAgentInstaller {
 
         let unchanged = plistMatches(existing: try? Data(contentsOf: plistURL), payload: payload)
         if !unchanged {
-            try? data.write(to: plistURL, options: .atomic)
+            do { try data.write(to: plistURL, options: .atomic) } catch { return }
         } else if isLoaded(label) {
             return
         }

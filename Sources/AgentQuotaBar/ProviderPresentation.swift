@@ -20,8 +20,8 @@ enum ProviderConnection {
     var color: NSColor {
         switch self {
         case .online: return QuotaStyle.healthyColor
-        case .unconfigured: return .systemOrange
-        case .offline: return .systemRed
+        case .unconfigured: return Theme.warning
+        case .offline: return Theme.danger
         case .disabled: return Theme.tertiary
         }
     }
@@ -34,6 +34,12 @@ enum ProviderUnit {
     case none
 }
 
+func quotaPercentText(_ value: Double) -> String {
+    if value > 0 && value < 0.5 { return "<1" }
+    if value >= 99.5 && value < 100 { return ">99" }
+    return String(Int(value.rounded()))
+}
+
 extension ProviderStatus {
     var connection: ProviderConnection {
         switch status {
@@ -44,54 +50,101 @@ extension ProviderStatus {
         }
     }
 
+    var creditMetric: QuotaMetric? { metrics.first { $0.kind == "credit" } }
+    var lowestWindow: QuotaMetric? {
+        metrics.filter { $0.kind == "percent" && $0.remainingPercent != nil }
+            .min { ($0.remainingPercent!, $0.label) < ($1.remainingPercent!, $1.label) }
+    }
+
+    var primaryMetric: QuotaMetric? {
+        if id == "trae", let creditMetric { return creditMetric }
+        if id == "codex", let week = metrics.first(where: { $0.label == "本周" && $0.remainingPercent != nil }) { return week }
+        return lowestWindow ?? creditMetric
+    }
+
+    // 不比较不同单位的裸数值。按剩余与各自警戒线的比值排序，耗尽排首位。
+    private func score(_ metric: QuotaMetric) -> Double {
+        if let p = metric.remainingPercent { return max(0, p) / max(1, QuotaStyle.warningPercent) }
+        guard let v = QuotaStyle.remainingNumber(self) else { return .infinity }
+        if v <= 0 { return 0 }
+        guard let t = QuotaStyle.threshold(for: self), t > 0 else { return .greatestFiniteMagnitude }
+        return v / t
+    }
+
+    private func urgency(_ metric: QuotaMetric) -> Int {
+        if score(metric) == 0 { return 0 }
+        if let p = metric.remainingPercent { return p <= QuotaStyle.dangerPercent ? 1 : p <= QuotaStyle.warningPercent ? 2 : 3 }
+        return score(metric) <= 0.5 ? 1 : score(metric) <= 1 ? 2 : 3
+    }
+
+    var riskTier: Int { riskMetric.map(urgency) ?? 4 }
+
+    var riskMetric: QuotaMetric? {
+        [lowestWindow, creditMetric].compactMap { $0 }.filter { score($0).isFinite }.min { (urgency($0), score($0)) < (urgency($1), score($1)) }
+    }
+    var riskScore: Double { riskMetric.map(score) ?? .infinity }
+    func valueText(_ metric: QuotaMetric) -> String {
+        if let p = metric.remainingPercent { return "\(quotaPercentText(p))%" }
+        guard let raw = metric.headlineValue else { return "" }
+        guard let currency = metric.currency, !currency.isEmpty else { return formattedNumber(raw) }
+        if Double(raw) != nil { return currencySymbol + raw }
+        return raw
+    }
+
+    var riskDescription: String {
+        guard let m = riskMetric else { return isUsable ? "额度未知" : connection.title }
+        if let p = m.remainingPercent { return "\(m.label)剩 \(quotaPercentText(p))%" }
+        return "\(m.label) \(valueText(m))"
+    }
+
+    var pointUnit: String { id == "doubao" ? "额度" : "积分" }
+
     var category: String {
-        if metrics.contains(where: { $0.kind == "percent" }) { return "订阅额度" }
-        if balance != nil || metrics.contains(where: { $0.kind == "currency" }) { return "现金余额" }
-        if metrics.contains(where: { $0.kind == "credit" }) { return "积分" }
-        return "其他"
+        switch unit {
+        case .percent: return "订阅额度"
+        case .points: return pointUnit
+        case .currency: return "现金余额"
+        case .none: return "其他"
+        }
     }
 
     var unit: ProviderUnit {
-        if metrics.contains(where: { $0.kind == "percent" }) { return .percent }
-        if let credit = metrics.first(where: { $0.kind == "credit" }) {
-            if let currency = credit.currency, !currency.isEmpty {
-                return .currency(currency)
-            }
-            return .points
-        }
-        if let currency = metrics.first(where: { $0.kind == "currency" })?.currency {
-            return .currency(currency)
-        }
-        if balance != nil { return .currency("CNY") }
-        return .none
+        guard let m = primaryMetric else { return .none }
+        if m.kind == "percent" { return .percent }
+        if let c = m.currency, !c.isEmpty { return .currency(c) }
+        return .points
     }
 
     var unitSuffix: String? {
         switch unit {
         case .percent, .currency, .none: return nil
-        case .points: return "积分"
+        case .points: return pointUnit
         }
     }
 
+    var hasExpandableWindows: Bool {
+        (["opencode", "codex"].contains(id) || !ProviderRegistry.builtins.contains { $0.id == id }) && metrics.filter { $0.kind == "percent" && $0.remainingPercent != nil }.count > 1
+    }
+
     var displayPrimaryValue: String {
-        if let percent = metrics.first(where: { $0.kind == "percent" })?.remainingPercent {
-            return "\(Int(percent.rounded()))%"
-        }
-        if let credit = metrics.first(where: { $0.kind == "credit" }), let text = credit.headlineValue {
-            if let currency = credit.currency, !currency.isEmpty {
-                return text.hasPrefix("¥") || text.hasPrefix("$") ? text : "\(currencySymbol)\(text)"
-            }
-            return formattedNumber(text)
-        }
-        if let balance {
-            let symbol = currencySymbol
-            return "\(symbol)\(String(format: balance >= 100 ? "%.0f" : "%.2f", balance))"
-        }
-        if let headline, !headline.isEmpty { return headline }
+        if let primaryMetric { return valueText(primaryMetric) }
+        if isUsable { return "额度未知" }
         return ""
     }
 
     var displaySubtitle: String {
+        cacheDescription ?? quotaSubtitle
+    }
+
+    var cacheDescription: String? {
+        guard cached == true else { return nil }
+        let time = FlexibleDateParser.date(from: sampledAt).map {
+            DateFormatter.localizedString(from: $0, dateStyle: .short, timeStyle: .short)
+        }
+        return "缓存 · " + (time ?? "上次成功读取")
+    }
+
+    var quotaSubtitle: String {
         if let raw = subscriptionUntil,
            let date = ISO8601DateFormatter.flexible.date(from: raw)
             ?? ISO8601DateFormatter().date(from: raw) {
@@ -119,18 +172,19 @@ extension ProviderStatus {
 
     /// 额度健康只看剩余/余额阈值；连接状态单独由 connection 表达。
     var health: QuotaSeverity {
-        if let remaining = metrics.filter({ $0.kind == "percent" }).compactMap(\.remainingPercent).min() {
-            return QuotaSeverity.from(remaining: remaining)
-        }
-        return .healthy
+        guard let metric = riskMetric else { return .neutral }
+        if let p = metric.remainingPercent { return QuotaSeverity.from(remaining: p) }
+        if riskScore <= 0.5 { return .critical }
+        return riskScore <= 1 ? .tight : .healthy
     }
 
-    private var currencySymbol: String {
+    var currencySymbol: String {
         switch (metrics.first(where: { $0.kind == "currency" })?.currency
                 ?? metrics.first(where: { $0.kind == "credit" })?.currency ?? "CNY").uppercased() {
         case "USD": return "$"
         case "EUR": return "€"
-        default: return "¥"
+        case "CNY": return "¥"
+        default: return (creditMetric?.currency ?? "") + " "
         }
     }
 

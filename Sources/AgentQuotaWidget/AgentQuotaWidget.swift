@@ -8,11 +8,11 @@ struct Provider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (Entry) -> Void) {
-        completion(Entry(date: Date(), snapshot: Snapshot.load() ?? .preview))
+        completion(Entry(date: Date(), snapshot: context.isPreview ? .preview : (Snapshot.load() ?? Snapshot(providers: []))))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> Void) {
-        let entry = Entry(date: Date(), snapshot: Snapshot.load() ?? .preview)
+        let entry = Entry(date: Date(), snapshot: Snapshot.load() ?? Snapshot(providers: []))
         completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(900))))
     }
 }
@@ -27,65 +27,59 @@ struct Entry: TimelineEntry {
 struct Snapshot: Decodable {
     let providers: [Provider]
     static let preview = Snapshot(providers: [
-        Provider(id: "codex", name: "Codex", remaining: 37, detail: "2 天后重置"),
-        Provider(id: "opencode", name: "OpenCode", remaining: 86, detail: "22 分钟后重置"),
+        Provider(id: "codex", name: "Codex", value: "本周剩 37%", sampledAt: "", cached: false),
+        Provider(id: "opencode", name: "OpenCode", value: "5 小时剩 86%", sampledAt: "", cached: false),
     ])
 
     struct Provider: Decodable {
         let id: String
         let name: String
-        let remaining: Double?
-        let detail: String?
+        let value: String
+        let sampledAt: String
+        let cached: Bool
     }
 
     static func load() -> Snapshot? {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let shared = home.appendingPathComponent("Library/Application Support/AgentQuotaBar/last-snapshot.json")
-        let fallback = home.appendingPathComponent(".config/agent-quota/last-snapshot.json")
-        let url = FileManager.default.fileExists(atPath: shared.path) ? shared : fallback
-        guard let data = try? Data(contentsOf: url),
-              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let providers = raw["providers"] as? [[String: Any]] else { return nil }
-        let mapped: [Provider] = providers.compactMap { item in
-            guard let id = item["id"] as? String, let name = item["name"] as? String else { return nil }
-            let metrics = item["metrics"] as? [[String: Any]] ?? []
-            let percent = metrics.first { ($0["kind"] as? String) == "percent" }
-            let remaining = percent?["remainingPercent"] as? Double
-            let detail = percent?["detail"] as? String
-            return Provider(id: id, name: name, remaining: remaining, detail: detail)
-        }
-        guard !mapped.isEmpty else { return nil }
-        return Snapshot(providers: mapped)
+        let url = home.appendingPathComponent("Library/Application Support/AgentQuotaBar/widget-values.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Snapshot.self, from: data)
     }
 }
 
 @available(macOS 14.0, *)
 struct AgentQuotaWidgetView: View {
     let entry: Entry
+    @Environment(\.widgetFamily) private var family
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Agent 额度").font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Text(entry.date, style: .time).font(.system(size: 10)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: family == .systemSmall ? 4 : 6) {
+            Text("额度概览")
+                .font(.headline)
+                .foregroundStyle(colorScheme == .dark ? Color(red: 134/255, green: 198/255, blue: 189/255) : Color(red: 11/255, green: 107/255, blue: 94/255))
+            Divider()
+            if entry.snapshot.providers.isEmpty {
+                Text("等待额度数据").font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(entry.snapshot.providers.prefix(4), id: \.id) { provider in
-                HStack(spacing: 8) {
-                    Text(provider.name).font(.system(size: 11, weight: .medium))
-                    Spacer()
-                    if let remaining = provider.remaining {
-                        Text("\(Int(remaining.rounded()))%")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(remaining <= 20 ? .red : (remaining <= 45 ? .orange : .teal))
-                    } else {
-                        Text("—").foregroundStyle(.secondary)
-                    }
+            ForEach(entry.snapshot.providers, id: \.id) { provider in
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(provider.name).fontWeight(.medium)
+                    Spacer(minLength: 2)
+                    Text(provider.value + (provider.cached ? "（缓存）" : ""))
+                        .monospacedDigit()
+                        .help(provider.sampledAt)
                 }
+                .font(.caption)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .accessibilityElement(children: .combine)
             }
         }
-        .padding(12)
-        .containerBackground(.fill.tertiary, for: .widget)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .containerBackground(for: .widget) {
+            colorScheme == .dark ? Color(red: 0.07, green: 0.10, blue: 0.09) : Color(red: 0.96, green: 0.95, blue: 0.94)
+        }
     }
 }
 
@@ -97,7 +91,7 @@ struct AgentQuotaWidget: Widget {
             AgentQuotaWidgetView(entry: entry)
         }
         .configurationDisplayName("Agent 额度")
-        .description("显示最近一家的 Agent 剩余额度。")
+        .description("查看已启用服务的剩余额度。")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }

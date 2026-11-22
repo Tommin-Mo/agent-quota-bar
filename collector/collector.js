@@ -22,6 +22,8 @@ const { execFileSync, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const { readTraeAuth } = require('./trae-crypto');
 
+const { feeds, readFeed } = require('./local-agents');
+
 const HOME = os.homedir();
 const CONFIG_PATH =
   process.env.AGENT_QUOTA_CONFIG || path.join(HOME, '.config', 'agent-quota', 'config.json');
@@ -85,6 +87,28 @@ function writeFileAtomic(filePath, data, options = {}) {
   }
 }
 
+// Darwin O_EXLOCK is not exported by Node. The Swift writers open the
+// same permanent sidecar with O_EXLOCK. The kernel releases it on exit.
+function withConfigLock(update) {
+  if (process.platform !== 'darwin') throw new Error('配置写入需要 macOS');
+  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
+  const flags = fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW |
+    fs.constants.O_NONBLOCK | 0x20;
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  const start = process.hrtime.bigint();
+  let fd;
+  while (fd === undefined) {
+    try { fd = fs.openSync(CONFIG_PATH + '.flock', flags, 0o600); }
+    catch (error) {
+      if (!['EAGAIN', 'EWOULDBLOCK', 'EINTR'].includes(error.code) ||
+          process.hrtime.bigint() - start >= 2000000000n) throw error;
+      Atomics.wait(wait, 0, 0, 5);
+    }
+  }
+  try { return update(); }
+  finally { fs.closeSync(fd); }
+}
+
 function loadConfig() {
   let user = {};
   try {
@@ -92,7 +116,11 @@ function loadConfig() {
   } catch (e) {
     if (e.code === 'ENOENT') {
       try {
-        writeFileAtomic(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n', { mode: 0o600 });
+        user = withConfigLock(() => {
+          if (fs.existsSync(CONFIG_PATH)) return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+          writeFileAtomic(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n', { mode: 0o600 });
+          return {};
+        });
       } catch {}
     }
   }
@@ -103,7 +131,7 @@ function loadConfig() {
   };
 }
 
-const CONFIG = loadConfig();
+const CONFIG = require.main === module ? loadConfig() : DEFAULT_CONFIG;
 
 // ---------------------------------------------------------------- 网络
 
@@ -498,8 +526,7 @@ function pick(obj, ...paths) {
 }
 
 function num(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
+  return numStrict(v);
 }
 
 /** 比 num 更严格：null / undefined / 空串 / 布尔 / 对象都算“没有值”，不折算成 0。 */
@@ -552,12 +579,19 @@ function fmtDate(ts) {
 function windowLabel(seconds) {
   if (!seconds) return '额度';
   if (seconds <= 6 * 3600) return '5 小时';
+  if (seconds === 86400) return '每日';
   if (seconds <= 8 * 86400) return '本周';
   if (seconds <= 32 * 86400) return '本月';
   return '周期';
 }
 
 // ---------------------------------------------------------------- 结果构造
+
+function percentText(value) {
+  if (value > 0 && value < 0.5) return '<1';
+  if (value >= 99.5 && value < 100) return '>99';
+  return String(Math.round(value));
+}
 
 function percentMetric(label, usedPercent, resetAt, extraDetail) {
   const used = Math.min(100, Math.max(0, Number(usedPercent) || 0));
@@ -602,6 +636,33 @@ function failed(id, name, message) {
 }
 
 // ---------------------------------------------------------------- Codex / ChatGPT
+
+function codexWindows(rateLimit) {
+  const metrics = [];
+
+  const primary = rateLimit.primary_window;
+  if (primary && num(primary.used_percent) !== undefined) {
+    metrics.push(
+      percentMetric(
+        windowLabel(num(primary.limit_window_seconds)),
+        num(primary.used_percent),
+        num(primary.reset_at) ? num(primary.reset_at) * 1000 : null,
+        rateLimit.allowed === false ? '已达上限' : ''
+      )
+    );
+  }
+  const secondary = rateLimit.secondary_window;
+  if (secondary && num(secondary.used_percent) !== undefined) {
+    metrics.push(
+      percentMetric(
+        windowLabel(num(secondary.limit_window_seconds)),
+        num(secondary.used_percent),
+        num(secondary.reset_at) ? num(secondary.reset_at) * 1000 : null
+      )
+    );
+  }
+  return metrics;
+}
 
 function collectCodex(cfg = {}) {
   const expandPath = (value) => {
@@ -648,29 +709,7 @@ function collectCodex(cfg = {}) {
   const plan = pick(j, 'plan_type') || '';
   const email = pick(j, 'email') || '';
   const rateLimit = j.rate_limit || {};
-  const metrics = [];
-
-  const primary = rateLimit.primary_window;
-  if (primary && num(primary.used_percent) !== undefined) {
-    metrics.push(
-      percentMetric(
-        windowLabel(num(primary.limit_window_seconds)),
-        num(primary.used_percent),
-        num(primary.reset_at) ? num(primary.reset_at) * 1000 : null,
-        rateLimit.allowed === false ? '已达上限' : ''
-      )
-    );
-  }
-  const secondary = rateLimit.secondary_window;
-  if (secondary && num(secondary.used_percent) !== undefined) {
-    metrics.push(
-      percentMetric(
-        windowLabel(num(secondary.limit_window_seconds)),
-        num(secondary.used_percent),
-        num(secondary.reset_at) ? num(secondary.reset_at) * 1000 : null
-      )
-    );
-  }
+  const metrics = codexWindows(rateLimit);
 
   const credits = j.credits || {};
   const balance = num(credits.balance);
@@ -710,12 +749,12 @@ function collectCodex(cfg = {}) {
     // 额度仍然可用，订阅字段可选。
   }
 
-  const headlineMetric = metrics.find((m) => m.kind === 'percent');
+  const headlineMetric = metrics.find((m) => m.label === '本周') || metrics.find((m) => m.kind === 'percent');
   return provider('codex', 'Codex', rateLimit.allowed === false ? 'warn' : 'ok', metrics, {
     account: email,
     plan,
-    headline: headlineMetric ? `${Math.round(headlineMetric.remainingPercent)}%` : '',
-    detail: rateLimit.allowed === false ? '本周额度已用尽' : 'Codex 订阅额度',
+    headline: headlineMetric ? `${percentText(headlineMetric.remainingPercent)}%` : '',
+    detail: rateLimit.allowed === false ? '请求额度受限' : 'Codex 订阅额度',
     ...subscription,
   });
 }
@@ -747,7 +786,7 @@ function deepseekResult(payload) {
     const parts = [];
     if (granted !== undefined) parts.push(`赠金 ${fmtMoney(granted, currency)}`);
     if (topped !== undefined) parts.push(`充值 ${fmtMoney(topped, currency)}`);
-    metrics.push(textMetric('余额', '—', parts.join(' · ') || '接口未返回余额总额'));
+    metrics.push(textMetric('余额', '未返回总额', parts.join(' · ') || '接口未返回余额总额'));
   }
 
   const available = payload.is_available !== false;
@@ -854,8 +893,8 @@ function collectTrae(cfg) {
     ];
     for (const [label, limitKey, usedKey] of pairs) {
       const limit = num(quota[limitKey]) ?? 0;
-      const used = num(usage[usedKey]) ?? 0;
-      if (limit > 0) {
+      const used = num(usage[usedKey]);
+      if (limit > 0 && used !== undefined) {
         hasQuota = true;
         metrics.push(
           percentMetric(label, (used / limit) * 100, null, `剩余 ${Math.max(0, limit - used)} / ${limit} 次`)
@@ -893,7 +932,7 @@ function collectTrae(cfg) {
         detail: '积分余额',
       });
     }
-    metrics.push(textMetric('积分', '—', soonestExpiry ? `免费版 · ${fmtDate(soonestExpiry)} 到期` : '免费版'));
+    metrics.push(textMetric('积分', '未返回积分', soonestExpiry ? `免费版 · ${fmtDate(soonestExpiry)} 到期` : '免费版'));
     badges.push('');
     return provider('trae', 'Trae', 'warn', metrics, {
       account: auth.userId,
@@ -905,7 +944,7 @@ function collectTrae(cfg) {
   const percent = metrics.find((m) => m.kind === 'percent');
   return provider('trae', 'Trae', 'ok', metrics, {
     account: auth.userId,
-    headline: percent ? `${Math.round(percent.remainingPercent)}%` : '',
+    headline: percent ? `${percentText(percent.remainingPercent)}%` : '',
     detail: planName || 'Trae 套餐额度',
     consumed: consumedCredits,
   });
@@ -961,7 +1000,6 @@ const WB_AUTH_DIR = path.join(
   'Public',
   'auth'
 );
-const WB_KEY_CACHE = path.join(path.dirname(CONFIG_PATH), 'workbuddy-at-rest');
 const WB_ELECTRON_CANDIDATES = [
   '/Applications/WorkBuddy.app/Contents/MacOS/Electron',
   path.join(process.env.HOME || '', 'Applications/WorkBuddy.app/Contents/MacOS/Electron'),
@@ -1042,14 +1080,6 @@ function probeWorkBuddyKey() {
   }
 }
 
-function readCachedWorkBuddyKey() {
-  try {
-    const value = fs.readFileSync(WB_KEY_CACHE, 'utf8').trim();
-    if (Buffer.from(value, 'base64').length === 32) return value;
-  } catch {}
-  return null;
-}
-
 function latestWorkBuddySnapshot() {
   try {
     const files = fs
@@ -1083,18 +1113,7 @@ function workBuddyAutoCredential() {
       return null;
     }
   };
-  let secret = readCachedWorkBuddyKey();
-  let credential = tryDecrypt(secret);
-  if (!credential) {
-    secret = probeWorkBuddyKey();
-    credential = tryDecrypt(secret);
-    if (credential && secret) {
-      try {
-        writeFileAtomic(WB_KEY_CACHE, secret + '\n', { mode: 0o600 });
-      } catch {}
-    }
-  }
-  return credential;
+  return tryDecrypt(probeWorkBuddyKey());
 }
 
 function collectWorkBuddy(cfg) {
@@ -1178,6 +1197,10 @@ function collectWorkBuddy(cfg) {
     return failed('workbuddy', 'WorkBuddy', msg);
   }
 
+  return workBuddyQuota(packages, uid, source);
+}
+
+function workBuddyQuota(packages, uid, source) {
   const totalKeys = ['CycleCapacitySizePrecise', 'CycleCapacitySize', 'CycleTotalCapacity', 'CapacitySizePrecise', 'CapacitySize'];
   const remainKeys = ['CycleCapacityRemainPrecise', 'CycleCapacityRemain', 'CycleRemainCapacity', 'CapacityRemainPrecise', 'CapacityRemain'];
   let total = 0;
@@ -1185,19 +1208,21 @@ function collectWorkBuddy(cfg) {
   let soonest = null;
   const nowMs = Date.now();
   for (const p of packages) {
-    const t = num(pick(p, ...totalKeys)) ?? 0;
-    const r = num(pick(p, ...remainKeys)) ?? 0;
+    const t = num(pick(p, ...totalKeys));
+    const r = num(pick(p, ...remainKeys));
     const exp = pick(p, 'ExpireTime', 'expireTime', 'ExpiredTime');
     const ts = num(exp) ? Number(exp) * (Number(exp) < 1e12 ? 1000 : 1) : null;
     // 过期套餐不计入累计消费；否则未用积分到期会被误算成“今天用了”。
     if (ts && ts <= nowMs) continue;
-    total += t;
+    if (r === undefined || r < 0) return failed('workbuddy', 'WorkBuddy', '套餐未返回有效剩余积分');
+    if (t === undefined || t < r) total = undefined;
+    else if (total !== undefined) total += t;
     remaining += r;
     if (r > 0 && ts && (!soonest || ts < soonest)) soonest = ts;
   }
 
   const metrics = [
-    creditMetric('剩余积分', Math.floor(remaining), '', `共 ${round(total, 0)}${soonest ? ` · 最近到期 ${fmtDate(soonest)}` : ''}`),
+    creditMetric('剩余积分', Math.floor(remaining), '', `${total === undefined ? "" : "共 " + round(total, 0)}${soonest ? ` · 最近到期 ${fmtDate(soonest)}` : ''}`),
   ];
   return provider('workbuddy', 'WorkBuddy', remaining > 0 ? 'ok' : 'warn', metrics, {
     account: uid,
@@ -1207,7 +1232,7 @@ function collectWorkBuddy(cfg) {
       : source === 'auto'
         ? 'WorkBuddy 积分（自动）'
         : `WorkBuddy 积分（${source.split('.')[0]}）`,
-    consumed: total - remaining,
+    consumed: total === undefined ? undefined : total - remaining,
   });
 }
 
@@ -1581,6 +1606,7 @@ function extractMeters(json) {
       seen.add(keyPath);
       let label;
       if (/(?:five|5h|rolling|session)/i.test(keyPath)) label = '5 小时';
+      else if (/(?:daily|24h|oneday)/i.test(keyPath)) label = '每日';
       else if (/(?:week|7d)/i.test(keyPath)) label = '本周';
       else if (/(?:month|30d)/i.test(keyPath)) label = '本月';
       else if (reset) {
@@ -1605,7 +1631,7 @@ function goWindowMeters(json) {
   const meters = [];
   const windows = json && json.usage;
   if (!windows || typeof windows !== 'object') return meters;
-  for (const [key, label] of [['rolling', '5 小时'], ['weekly', '本周'], ['monthly', '本月']]) {
+  for (const [key, label] of [['rolling', '5 小时'], ['daily', '每日'], ['weekly', '本周'], ['monthly', '本月']]) {
     const item = windows[key];
     if (!item || typeof item !== 'object') continue;
     let used = numStrict(item.percent);
@@ -1639,12 +1665,15 @@ function collectOpenCode(cfg) {
   const apiKey = String(cfg.apiKey || process.env.OPENCODE_GO_API_KEY || '').trim();
 
   // 账号切换可能留下上一账号的 mode；凭据形态优先，避免切到 Go 后仍走 Zen。
-  if (apiKey && (mode !== 'zen' || !cfg.cookie)) {
+  if (mode === 'go' && !apiKey && process.argv.includes('--verify-stdin')) {
+    return unconfigured('opencode', 'OpenCode', 'Go 模式需要 API Key');
+  }
+  if (apiKey && mode !== 'zen') {
     const res = http('https://opencode.ai/zen/go/v1/usage', {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
     });
     if (res.status === 401 || res.status === 403) {
-      if (chromeCookieImportEnabled(cfg)) {
+      if (!process.argv.includes('--verify-stdin') && chromeCookieImportEnabled(cfg)) {
         const retry = collectOpenCode({ ...cfg, apiKey: '', mode: 'zen' });
         if (retry.status === 'ok' || retry.status === 'warn') return retry;
       }
@@ -1656,7 +1685,7 @@ function collectOpenCode(cfg) {
       if (meters.length) {
         const first = meters[0];
         return provider('opencode', 'OpenCode', 'ok', meters, {
-          headline: `${Math.round(first.remainingPercent)}%`,
+          headline: `${percentText(first.remainingPercent)}%`,
           detail: 'OpenCode Go 订阅额度',
         });
       }
@@ -1710,7 +1739,7 @@ function collectOpenCode(cfg) {
     const first = metrics.find((m) => m.kind === 'percent') || metrics[0];
     return provider('opencode', 'OpenCode', 'ok', metrics, {
       account: orgId,
-      headline: first.kind === 'credit' ? first.headlineValue : `${Math.round(first.remainingPercent)}%`,
+      headline: first.kind === 'credit' ? first.headlineValue : `${percentText(first.remainingPercent)}%`,
       detail: cookieInfo.source === 'chrome' ? 'OpenCode Console（Chrome Cookie）' : 'OpenCode Console（Cookie）',
     });
   }
@@ -1895,24 +1924,28 @@ function localDateKey() {
 
 function writeCheckinConfig(results) {
   try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    const checkin = raw.checkin && typeof raw.checkin === 'object' ? raw.checkin : {};
-    const failed = results.some((r) => r.status === 'failed');
-    const summary = results.map((r) => {
-      const name = r.provider === 'trae' ? 'Trae' : 'WorkBuddy';
-      if (r.status === 'ok') return `${name} +${r.points ?? 100}`;
-      if (r.status === 'already') return `${name} 已签`;
-      if (r.status === 'inactive') return `${name} 未开放`;
-      return `${name} 失败`;
-    }).join(' · ');
-    const workbuddy = results.find((r) => r.provider === 'workbuddy');
-    checkin.lastAttempt = new Date().toISOString();
-    if (!failed) checkin.lastDate = localDateKey();
-    checkin.lastSummary = summary || '今日已签到';
-    if (workbuddy && workbuddy.streak != null) checkin.workbuddyStreak = workbuddy.streak;
-    raw.checkin = checkin;
-    // 只改 checkin 字段并原子覆盖，保留用户其它配置项与文件权限。
-    writeFileAtomic(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n');
+    withConfigLock(() => {
+      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      const checkin = raw.checkin && typeof raw.checkin === 'object' ? raw.checkin : {};
+      const failed = results.some((r) => r.status === 'failed');
+      const summary = results.map((r) => {
+        const name = r.provider === 'trae' ? 'Trae' : 'WorkBuddy';
+        if (r.status === 'ok') return `${name} +${r.points ?? 100}`;
+        if (r.status === 'already') return `${name} 已签`;
+        if (r.status === 'inactive') return `${name} 未开放`;
+        return `${name} 失败`;
+      }).join(' · ');
+      const workbuddy = results.find((r) => r.provider === 'workbuddy');
+      checkin.lastAttempt = new Date().toISOString();
+      checkin.resultDate = localDateKey();
+      checkin.results = Object.fromEntries(results.map(r => [r.provider, r.status]));
+      if (results.length && !failed) checkin.lastDate = localDateKey();
+      checkin.lastSummary = summary || '今日已签到';
+      if (workbuddy && workbuddy.streak != null) checkin.workbuddyStreak = workbuddy.streak;
+      raw.checkin = checkin;
+      // 只改 checkin 字段并原子覆盖，保留用户其它配置项与文件权限。
+      writeFileAtomic(CONFIG_PATH, JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 });
+    });
   } catch (e) {
     process.stderr.write(`write config failed: ${e.message}\n`);
   }
@@ -1956,12 +1989,29 @@ function runCheckin(only, options = {}) {
 
 // ---------------------------------------------------------------- main
 
+function collectDoubao() {
+  const bundled = path.resolve(__dirname, '../MacOS/AgentQuotaBar');
+  const reader = fs.existsSync(bundled) ? bundled :
+    path.resolve(__dirname, '../dist/AgentQuotaBar.app/Contents/MacOS/AgentQuotaBar');
+  const run = spawnSync(reader, ['--read-doubao-quota'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 150000, maxBuffer: 512,
+  });
+  const token = run.status === 0 ? run.stdout.trim() : '';
+  if (/^\d+$/.test(token) && Number.isSafeInteger(Number(token))) {
+    const balance = Number(token);
+    return provider('doubao', '豆包', 'ok', [creditMetric('可用额度', balance, '', '')], { balance, sampledAt: new Date().toISOString() });
+  }
+  const reasons = { permission: '请在系统设置中允许屏幕录制', notVisible: '请展开豆包侧栏的可用额度', notRunning: '请打开豆包客户端' };
+  return failed('doubao', '豆包', reasons[token] || '暂时无法读取豆包额度');
+}
+
 const COLLECTORS = {
   codex: collectCodex,
   deepseek: collectDeepSeek,
   opencode: collectOpenCodeWithCost,
   trae: collectTrae,
   workbuddy: collectWorkBuddy,
+  doubao: collectDoubao,
 };
 
 const NAMES = {
@@ -1970,7 +2020,32 @@ const NAMES = {
   opencode: 'OpenCode',
   trae: 'Trae',
   workbuddy: 'WorkBuddy',
+  doubao: '豆包',
 };
+
+function quotaPresentation(item, config) {
+  const windows = item.metrics.filter(m => m.kind === 'percent' && Number.isFinite(m.remainingPercent));
+  windows.sort((a, b) => a.remainingPercent - b.remainingPercent || a.label.localeCompare(b.label));
+  const credit = item.metrics.find(m => m.kind === 'credit' && Number.isFinite(m.value));
+  const primary = (item.id === 'trae' && credit) ||
+    (item.id === 'codex' && windows.find(m => m.label === '本周')) || windows[0] || credit;
+  const threshold = item.id === "deepseek" && credit?.currency?.toUpperCase() !== "CNY" ? 0 : config.style?.thresholds?.[item.id] ?? ({ trae: 200, workbuddy: 500, deepseek: 5 }[item.id]);
+  const warning = Math.round(10 * Math.min(99, Math.max(2, config.style?.warningPercent ?? 45))) / 10;
+  const danger = Math.round(10 * Math.min(warning - 1, Math.max(1, config.style?.dangerPercent ?? 20))) / 10;
+  const score = m => m.kind === 'percent'
+    ? Math.max(0, m.remainingPercent) / warning
+    : m.value <= 0 ? 0 : threshold > 0 ? m.value / threshold : Number.MAX_VALUE;
+  const format = m => m.kind === 'percent' ? m.label + '剩 ' + percentText(m.remainingPercent) + '%' : m.label + ' ' + m.headlineValue;
+  const tier = m => {
+    if (score(m) === 0) return 0;
+    if (m.kind === 'percent') return m.remainingPercent <= danger ? 1 : score(m) <= 1 ? 2 : 3;
+    return score(m) <= 0.5 ? 1 : score(m) <= 1 ? 2 : 3;
+  };
+  const risk = [windows[0], credit].filter(Boolean).sort((a, b) => tier(a) - tier(b) || score(a) - score(b))[0];
+  return { visible: item.status !== 'disabled' && !(config.hiddenProviders || []).includes(item.id),
+    tier: risk ? tier(risk) : null, primary: primary ? format(primary) : '', risk: risk ? format(risk) : '',
+    score: risk && ['ok', 'warn'].includes(item.status) ? score(risk) : null };
+}
 
 function main() {
   const onlyArg = process.argv.find((a) => a.startsWith('--only='));
@@ -1982,23 +2057,31 @@ function main() {
     });
     return;
   }
+  let candidate;
+  if (process.argv.includes('--verify-stdin')) {
+    if (only?.length !== 1) throw new Error('验证需要指定单个服务');
+    candidate = JSON.parse(fs.readFileSync(0, 'utf8'));
+  }
   const sampledAt = new Date().toISOString();
   const results = [];
 
-  for (const [id, fn] of Object.entries(COLLECTORS)) {
+  const local = feeds(CONFIG_PATH, new Set(Object.keys(COLLECTORS)));
+  const adapters = [...Object.entries(COLLECTORS), ...local.map(feed => [feed.id, () => readFeed(feed)])];
+  for (const [id, fn] of adapters) {
+    if (id === 'doubao' && process.argv.includes('--skip-doubao')) continue;
     if (only && !only.includes(id)) continue;
-    const cfg = CONFIG.providers[id] || {};
-    if (cfg.enabled === false) {
-      results.push(provider(id, NAMES[id], 'disabled', [], { detail: '已停用' }));
+    const cfg = candidate ?? CONFIG.providers[id] ?? {};
+    if (cfg.enabled === false || (id === 'doubao' && CONFIG.hiddenProviders?.includes(id))) {
+      results.push(provider(id, NAMES[id] || id, 'disabled', [], { detail: '已停用', localAccountID: [cfg.activeAccount, cfg.quotaRevision].filter(Boolean).join(':') || null, selectionRevision: cfg.selectionRevision || null }));
       continue;
     }
     let result;
     try {
       result = fn(cfg);
     } catch (e) {
-      result = failed(id, NAMES[id], e.message || String(e));
+      result = failed(id, NAMES[id] || id, Object.hasOwn(COLLECTORS, id) ? e.message || String(e) : '额度文件不可用');
     }
-    results.push({ ...attachProviderHealth(result, id), name: result.name || NAMES[id] });
+    results.push({ ...attachProviderHealth(result, id), presentation: quotaPresentation(result, CONFIG), sampledAt: result.sampledAt || sampledAt, selectionRevision: cfg.selectionRevision || null, localAccountID: [cfg.activeAccount, cfg.quotaRevision].filter(Boolean).join(':') || null, name: result.name || NAMES[id] });
   }
 
   const output = {
@@ -2022,6 +2105,9 @@ module.exports = {
   writeFileAtomic,
   writeCheckinConfig,
   deepseekResult,
+  codexWindows,
+  workBuddyQuota,
+  quotaPresentation,
   goWindowMeters,
   decryptChromeCookieValue,
   readChromeCookiesForHost,

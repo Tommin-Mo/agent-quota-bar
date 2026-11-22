@@ -2,7 +2,7 @@ import AppKit
 
 // MARK: - 弹出面板
 
-final class ThemedRootView: NSView {
+final class ThemedRootView: ThemedSurfaceView {
     var onAppearanceChange: (() -> Void)?
 
     override func viewDidChangeEffectiveAppearance() {
@@ -15,6 +15,7 @@ final class QuotaPopoverViewController: NSViewController {
     private let service: QuotaService
     var onConfigure: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onSelectServices: (() -> Void)?
     var onRefresh: (() -> Void)?
     var onCheckin: (() -> Void)?
     var onHistory: (() -> Void)?
@@ -22,11 +23,21 @@ final class QuotaPopoverViewController: NSViewController {
     var onReorder: (([String]) -> Void)?
 
     private let root = ThemedRootView()
-    private let titleLabel = NSTextField(labelWithString: "Agent 额度")
+    private let titleLabel = NSTextField(labelWithString: "额度概览")
     private let subtitleLabel = NSTextField(labelWithString: "")
+    private let masthead = ThemedSurfaceView()
+    private let footer = NSStackView()
+    private let pager = NSStackView()
+    private let pageLabel = NSTextField(labelWithString: "")
+    private let previousPage = NSButton()
+    private let nextPage = NSButton()
+    private var pageIndex = 0
+    private var pageAnchor: String?
+    var availableHeight: CGFloat = 720 { didSet { if isViewLoaded { updatePreferredSize() } } }
     private let rowsStack = NSStackView()
     private let footerLabel = NSTextField(labelWithString: "")
     private let headerActions = NSStackView()
+    private var headerInset: NSLayoutConstraint?
     private let themeButton = HeaderIconButton(symbol: "moon")
     private let refreshButton = HeaderIconButton(symbol: "arrow.clockwise")
     private let checkinButton = HeaderIconButton(symbol: "checkmark.circle")
@@ -38,12 +49,17 @@ final class QuotaPopoverViewController: NSViewController {
     private var checkinDone = false
     private var checkinDetailText = ""
     private var checkinRunning = false
+    private var expandedID: String?
     private var lastSnapshot: QuotaSnapshot?
     private var lastError: String?
     private var lastRefreshing = false
     private var lastOffline = false
     private var lastReportedPreferredSize: NSSize = .zero
     private let spinner = NSProgressIndicator()
+    private var refreshDelay: DispatchWorkItem?
+    private var showingRefreshMark = false
+    private var panelVisible = false
+    private let headerHint = HeaderHint()
     private var draggingRow: ProviderRowView?
 
     // MARK: - 可选数据钩子（优先用注入值；缺省时读 CostStore/HistoryStore）
@@ -89,20 +105,23 @@ final class QuotaPopoverViewController: NSViewController {
     }
 
     override func loadView() {
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateRefreshMark),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         root.onAppearanceChange = { [weak self] in
             guard let self, self.view.window != nil else { return }
             self.refreshAppearance()
         }
+        root.isWindowCanvas = true
         root.wantsLayer = true
-        root.layer?.backgroundColor = Theme.background.resolvedCGColor()
+        root.surfaceColor = Theme.surface
         root.frame = NSRect(x: 0, y: 0, width: 380, height: 520)
 
-        titleLabel.stringValue = "额度"
-        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-        titleLabel.textColor = NSColor.labelColor.resolvedForAppearance()
+        titleLabel.stringValue = "额度概览"
+        titleLabel.font = Theme.headingFont(size: Theme.design == .claude ? 25 : 19, weight: .bold)
+        titleLabel.textColor = Theme.text
 
         subtitleLabel.font = .systemFont(ofSize: 11)
-        subtitleLabel.textColor = Theme.tertiary
+        subtitleLabel.textColor = Theme.secondary
         subtitleLabel.isHidden = true
         subtitleLabel.lineBreakMode = .byTruncatingTail
 
@@ -116,8 +135,12 @@ final class QuotaPopoverViewController: NSViewController {
         spinner.controlSize = .small
         spinner.isDisplayedWhenStopped = false
         spinner.translatesAutoresizingMaskIntoConstraints = false
-        spinner.widthAnchor.constraint(equalToConstant: 12).isActive = true
-        spinner.heightAnchor.constraint(equalToConstant: 12).isActive = true
+        refreshButton.addSubview(spinner)
+        NSLayoutConstraint.activate([
+            spinner.widthAnchor.constraint(equalToConstant: 15), spinner.heightAnchor.constraint(equalToConstant: 15),
+            spinner.centerXAnchor.constraint(equalTo: refreshButton.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: refreshButton.centerYAnchor)
+        ])
 
         themeButton.target = self
         themeButton.action = #selector(themeTapped)
@@ -133,26 +156,32 @@ final class QuotaPopoverViewController: NSViewController {
         refreshButton.action = #selector(refreshTapped)
         refreshButton.toolTip = "立即刷新"
         refreshButton.setIconAccessibilityLabel("立即刷新")
+        let history = iconButton("calendar", tooltip: "用量历史", action: #selector(historyTapped))
         let gear = iconButton("gearshape", tooltip: "设置", action: #selector(settingsTapped))
 
         headerActions.orientation = .horizontal
         headerActions.alignment = .centerY
         headerActions.spacing = 3
-        headerActions.edgeInsets = NSEdgeInsets(top: 2, left: 2, bottom: 2, right: 2)
-        headerActions.wantsLayer = true
-        headerActions.layer?.backgroundColor = Theme.surfaceAlt.resolvedCGColor()
-        headerActions.layer?.cornerRadius = 10
-        headerActions.layer?.cornerCurve = .continuous
-        headerActions.layer?.borderWidth = 1
-        headerActions.layer?.borderColor = Theme.separator.resolvedCGColor()
         headerActions.translatesAutoresizingMaskIntoConstraints = false
-        for button in [checkinButton, themeButton, refreshButton, gear] { headerActions.addArrangedSubview(button) }
+        for button in [checkinButton, history, themeButton, refreshButton, gear] { headerActions.addArrangedSubview(button) }
 
         let headerSpacer = NSView()
         headerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         // 刷新状态放在 subtitle；不把空 spinner 留在 header 里，避免静止时出现灰点。
-        let header = NSStackView(views: [titles, headerSpacer, headerActions])
+        let actions = ThemedSurfaceView()
+        actions.wantsLayer = true
+        actions.layer?.cornerRadius = 18
+        actions.isNavigationSurface = true
+        actions.surfaceColor = .clear
+        actions.addSubview(headerActions)
+        NSLayoutConstraint.activate([
+            headerActions.leadingAnchor.constraint(equalTo: actions.leadingAnchor, constant: 5),
+            headerActions.trailingAnchor.constraint(equalTo: actions.trailingAnchor, constant: -5),
+            headerActions.topAnchor.constraint(equalTo: actions.topAnchor, constant: 2),
+            headerActions.bottomAnchor.constraint(equalTo: actions.bottomAnchor, constant: -2)
+        ])
+        let header = NSStackView(views: [titles, headerSpacer, actions])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 8
@@ -211,39 +240,53 @@ final class QuotaPopoverViewController: NSViewController {
         footerLabel.font = .systemFont(ofSize: 10)
         footerLabel.textColor = Theme.tertiary
         footerLabel.lineBreakMode = .byTruncatingTail
-        footerLabel.toolTip = "颜色按剩余比例：≥\(QuotaStyle.warningPercent)% 绿，\(QuotaStyle.dangerPercent)%–\(QuotaStyle.warningPercent)% 橙，<\(QuotaStyle.dangerPercent)% 红"
 
         let footerSpacer = NSView()
         footerSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let history = NSButton(title: "历史", target: self, action: #selector(historyTapped))
-        history.isBordered = false
-        history.font = .systemFont(ofSize: 10)
-        history.contentTintColor = Theme.accent
-
-        let quit = NSButton(title: "退出", target: self, action: #selector(quitTapped))
-        quit.isBordered = false
-        quit.font = .systemFont(ofSize: 10)
-        quit.contentTintColor = Theme.tertiary
-
-        let footer = NSStackView(views: [footerLabel, footerSpacer, history, quit])
+        for (button, title, icon) in [(previousPage, "上一页服务", "chevron.left"), (nextPage, "下一页服务", "chevron.right")] {
+            button.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)
+            button.imagePosition = .imageOnly
+            button.bezelStyle = .rounded
+            button.setAccessibilityLabel(title)
+            button.target = self
+            button.action = #selector(changePage(_:))
+            button.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        }
+        pageLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        [previousPage, pageLabel, nextPage].forEach { pager.addArrangedSubview($0) }
+        pager.spacing = 6
+        pager.isHidden = true
+        [footerLabel, footerSpacer, pager].forEach { footer.addArrangedSubview($0) }
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 6
         footer.distribution = .fill
         footer.translatesAutoresizingMaskIntoConstraints = false
 
-        root.addSubview(header)
+        masthead.wantsLayer = true
+        masthead.layer?.cornerRadius = 12
+        masthead.surfaceColor = .clear
+        masthead.layer?.cornerCurve = .continuous
+        masthead.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(masthead)
+        masthead.addSubview(header)
         root.addSubview(insightStack)
         root.addSubview(rowsStack)
         root.addSubview(footer)
 
+        let inset = header.leadingAnchor.constraint(equalTo: masthead.leadingAnchor, constant: 2)
+        headerInset = inset
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
-            header.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            header.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            masthead.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
+            masthead.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
+            masthead.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+            header.topAnchor.constraint(equalTo: masthead.topAnchor, constant: 10),
+            header.bottomAnchor.constraint(equalTo: masthead.bottomAnchor, constant: -10),
+            inset,
+            header.trailingAnchor.constraint(equalTo: masthead.trailingAnchor, constant: -8),
 
-            insightStack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
+            insightStack.topAnchor.constraint(equalTo: masthead.bottomAnchor, constant: 6),
             insightStack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             insightStack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
 
@@ -257,22 +300,15 @@ final class QuotaPopoverViewController: NSViewController {
             footer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
         ])
 
+        root.addSubview(headerHint)
+        for case let button as HeaderIconButton in headerActions.arrangedSubviews {
+            button.hintText = button.toolTip ?? ""
+            button.toolTip = nil
+            button.onHover = { [weak self] hovered in self?.headerHint.track(hovered) }
+        }
         view = root
         preferredContentSize = NSSize(width: 380, height: 520)
         refreshAppearance()
-    }
-
-    private func applyAppearanceRecursively(to node: NSView) {
-        if let label = node as? ThemedLabel {
-            label.applyRole(label.roleColor)
-            label.needsDisplay = true
-        } else if let logo = node as? LogoBadgeView {
-            logo.refreshInk()
-            logo.needsDisplay = true
-        }
-        node.needsDisplay = true
-        node.layer?.setNeedsDisplay()
-        node.subviews.forEach { applyAppearanceRecursively(to: $0) }
     }
 
     func refreshAppearance() {
@@ -291,12 +327,13 @@ final class QuotaPopoverViewController: NSViewController {
                 isOffline: lastOffline
             )
         }
-        applyAppearanceRecursively(to: view)
-        root.layer?.backgroundColor = Theme.background.resolvedCGColor()
-        headerActions.layer?.backgroundColor = Theme.surfaceAlt.resolvedCGColor()
-        headerActions.layer?.borderColor = Theme.separator.resolvedCGColor()
-        titleLabel.textColor = .labelColor.resolvedForAppearance()
-        subtitleLabel.textColor = Theme.tertiary.resolvedForAppearance()
+        headerInset?.constant = 2
+        rowsStack.spacing = Theme.design == .glass ? 5 : 0
+        Theme.refreshViews(view)
+        titleLabel.font = Theme.headingFont(size: Theme.design == .claude ? 25 : 19, weight: .bold)
+        root.surfaceColor = Theme.design == .claude ? Theme.background : Theme.surface
+        titleLabel.textColor = Theme.text
+        subtitleLabel.textColor = Theme.secondary
         footerLabel.textColor = Theme.tertiary.resolvedForAppearance()
         costLabel.textColor = Theme.secondary.resolvedForAppearance()
         historyCaptionLabel.textColor = Theme.tertiary.resolvedForAppearance()
@@ -392,21 +429,25 @@ final class QuotaPopoverViewController: NSViewController {
     }
 
     func update(snapshot: QuotaSnapshot?, error: String?, isRefreshing: Bool, isOffline: Bool = false) {
+        let snapshot = snapshot ?? (isRefreshing && !isOffline ? lastSnapshot : nil)
         lastSnapshot = snapshot
         lastError = error
         lastRefreshing = isRefreshing
         lastOffline = isOffline
         updateInsightContent()
+        subtitleLabel.textColor = Theme.secondary
         rowsStack.arrangedSubviews.forEach {
             rowsStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
 
-        if isRefreshing { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
         refreshButton.isEnabled = !isRefreshing
-        refreshButton.toolTip = isRefreshing ? "正在刷新…" : "立即刷新"
+        refreshButton.hintText = isRefreshing ? "正在刷新…" : "立即刷新"
+        refreshButton.setAccessibilityLabel(refreshButton.hintText)
+        updateRefreshMark()
 
         guard let snapshot else {
+            subtitleLabel.isHidden = false
             subtitleLabel.stringValue = isOffline
                 ? "网络未连接"
                 : (error == nil ? "正在查询…" : "查询失败")
@@ -419,7 +460,7 @@ final class QuotaPopoverViewController: NSViewController {
             }
             if isOffline {
                 footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
-                footerLabel.textColor = .systemOrange
+                footerLabel.textColor = Theme.warning
             } else {
                 footerLabel.stringValue = isRefreshing ? "正在查询…" : "尚未刷新"
                 footerLabel.textColor = Theme.tertiary
@@ -428,29 +469,40 @@ final class QuotaPopoverViewController: NSViewController {
             return
         }
 
-        if isOffline { addOfflineBanner() }
+
         let ordered = orderedProviders(snapshot)
         if ordered.isEmpty {
             let empty = wrappingLabel(
-                "还没有启用服务。打开设置 → 服务，选择要显示的 Agent。",
+                "当前没有可显示的服务。",
                 size: 11,
                 color: Theme.secondary,
                 width: 310
             )
             rowsStack.addArrangedSubview(empty)
+            rowsStack.addArrangedSubview(NSButton(title: "选择显示的服务…", target: self, action: #selector(selectServices)))
             empty.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
         }
         for (index, provider) in ordered.enumerated() {
-            let category = provider.category
-            let showsCategory = index == 0 || ordered[index - 1].category != category
             let row = ProviderRowView(
                 provider: provider,
+                expanded: expandedID == provider.id && provider.hasExpandableWindows,
+                preferredWindow: service.config.string("panelWindow." + provider.id),
+                onToggle: { [weak self] in
+                    guard let self else { return }
+                    self.pageIndex = 0
+                    self.pageAnchor = provider.id
+                    self.expandedID = self.expandedID == provider.id ? nil : provider.id
+                    for case let row as ProviderRowView in self.rowsStack.arrangedSubviews {
+                        row.setExpanded(row.providerID == self.expandedID, animated: true)
+                    }
+                    self.updatePreferredSize()
+                    let button = self.rowsStack.arrangedSubviews.compactMap { $0 as? ProviderRowView }.first { $0.providerID == provider.id }?.toggleButton
+                    if let button { button.window?.makeFirstResponder(button) }
+                },
                 todaySpent: UsageTracker.shared.todaySpent(for: provider.id),
-                checkinDone: checkinDone,
+                checkinDone: CheckinService.result(for: provider.id, in: service.config) == "已签到",
                 checkinStreak: service.config.int("checkin.workbuddyStreak", default: 0),
                 costText: resolvedCostText(for: provider),
-                category: category,
-                showsCategory: showsCategory,
                 onConfigure: { [weak self] in
                     self?.onConfigure?(provider.id)
                 },
@@ -461,26 +513,48 @@ final class QuotaPopoverViewController: NSViewController {
                     self?.openServiceStatus(provider.id)
                 }
             )
-            row.showsSeparator = index < ordered.count - 1
+            row.showsSeparator = Theme.design != .glass && index < ordered.count - 1
             row.translatesAutoresizingMaskIntoConstraints = false
             rowsStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
             let pan = NSPanGestureRecognizer(target: self, action: #selector(handleRowPan(_:)))
+            pan.delegate = row
             row.addGestureRecognizer(pan)
         }
 
-        let subtitle = isOffline ? "网络未连接 · 显示上次数据" : (isRefreshing ? "正在刷新…" : "")
-        subtitleLabel.stringValue = subtitle
-        subtitleLabel.isHidden = true
+        let headers = rowsStack.arrangedSubviews.compactMap { ($0 as? ProviderRowView)?.summaryHeader }
+        if let height = headers.map({ ceil($0.fittingSize.height) }).max() {
+            for header in headers {
+                header.heightAnchor.constraint(equalToConstant: height).isActive = true
+            }
+        }
+
+        if isOffline {
+            subtitleLabel.stringValue = "离线 · 显示上次数据"
+        } else if isRefreshing {
+            subtitleLabel.stringValue = "正在刷新…"
+        } else if let urgent = snapshot.mostUrgent.first, urgent.riskTier <= 2 {
+            // 首屏先回答“谁最紧张”，而不是只报数量；不改变用户固定排序。
+            let urgentCount = snapshot.mostUrgent.count
+            subtitleLabel.stringValue = urgentCount == 1
+                ? snapshot.riskSummary
+                : "\(urgentCount) 家服务需关注 · 已显示 \(ordered.count) 项服务"
+            subtitleLabel.textColor = urgent.riskTier <= 1 ? Theme.danger : Theme.warning
+        } else {
+            subtitleLabel.stringValue = ordered.isEmpty ? "" : "已显示 \(ordered.count) 项服务"
+            subtitleLabel.textColor = Theme.secondary
+        }
+        subtitleLabel.isHidden = subtitleLabel.stringValue.isEmpty
+        subtitleLabel.toolTip = subtitleLabel.stringValue
 
         if isOffline {
             footerLabel.stringValue = "⚠︎ 网络未连接，联网后自动刷新"
-            footerLabel.textColor = .systemOrange
+            footerLabel.textColor = Theme.warning
         } else if let error {
             footerLabel.stringValue = "⚠︎ " + error
-            footerLabel.textColor = .systemOrange
+            footerLabel.textColor = Theme.warning
         } else {
-            footerLabel.stringValue = "更新 \(timeText(snapshot.updatedDate))"
+            footerLabel.stringValue = snapshot.updatedDate.map { "更新于 " + timeText($0) } ?? ""
             footerLabel.textColor = Theme.tertiary
         }
 
@@ -488,9 +562,7 @@ final class QuotaPopoverViewController: NSViewController {
     }
 
     private static func category(for provider: ProviderStatus) -> String {
-        if provider.metrics.contains(where: { $0.kind == "percent" }) { return "订阅额度" }
-        if provider.id == "deepseek" { return "现金余额" }
-        return "积分"
+        provider.category
     }
 
     private func openServiceStatus(_ providerID: String) {
@@ -502,6 +574,11 @@ final class QuotaPopoverViewController: NSViewController {
         if let raw = URLs[providerID], let url = URL(string: raw) {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    func expandForSnapshot(_ id: String) {
+        guard expandedID != id else { return }
+        rowsStack.arrangedSubviews.compactMap { $0 as? ProviderRowView }.first { $0.providerID == id }?.toggleButton.performClick(nil)
     }
 
     private func orderedProviders(_ snapshot: QuotaSnapshot) -> [ProviderStatus] {
@@ -517,13 +594,6 @@ final class QuotaPopoverViewController: NSViewController {
         for provider in snapshot.providers where provider.status != "disabled" && !result.contains(where: { $0.id == provider.id }) {
             result.append(provider)
         }
-        // 服务顺序可以自定义，但分组顺序固定：订阅额度 → 现金余额 → 积分。
-        let categoryRank = ["订阅额度": 0, "现金余额": 1, "积分": 2]
-        result.sort {
-            let left = categoryRank[$0.category] ?? 9
-            let right = categoryRank[$1.category] ?? 9
-            return left < right
-        }
         return result
     }
 
@@ -531,27 +601,70 @@ final class QuotaPopoverViewController: NSViewController {
         let banner = wrappingLabel(
             "网络未连接，显示上次数据，联网后自动刷新",
             size: 11,
-            color: .systemOrange,
+            color: Theme.warning,
             width: 310
         )
         rowsStack.addArrangedSubview(banner)
         banner.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
     }
 
+    @objc private func changePage(_ sender: NSButton) {
+        pageAnchor = nil
+        pageIndex += sender === nextPage ? 1 : -1
+        updatePreferredSize()
+    }
+
     private func updatePreferredSize() {
+        let rows = rowsStack.arrangedSubviews
+        for row in rows {
+            row.isHidden = false
+            (row as? ProviderRowView)?.showDetailRange(nil)
+        }
         view.layoutSubtreeIfNeeded()
-        let rowsHeight = rowsStack.fittingSize.height
-        var insightsHeight: CGFloat = 0
-        if !costLabel.isHidden {
-            insightsHeight += costLabel.fittingSize.height
+        let heights = rows.map { ceil($0.fittingSize.height) }
+        let total = heights.reduce(0, +) + CGFloat(max(0, rows.count - 1)) * rowsStack.spacing
+        let fixed = ceil(masthead.fittingSize.height + insightStack.fittingSize.height) + 40
+        let fullHeight = fixed + ceil(footerLabel.fittingSize.height) + total
+        pager.isHidden = fullHeight <= availableHeight || rows.isEmpty
+        if !pager.isHidden {
+            let budget = availableHeight - fixed - ceil(pager.fittingSize.height)
+            var pages: [(rows: [NSView], details: Range<Int>?)] = []
+            var used: CGFloat = 0
+            for (row, height) in zip(rows, heights) {
+                if height > budget, let provider = row as? ProviderRowView,
+                   let parts = provider.detailPages(availableHeight: budget, rowHeight: height) {
+                    for part in parts { pages.append(([row], part)) }
+                    used = budget
+                    continue
+                }
+                if pages.isEmpty || used + rowsStack.spacing + height > budget {
+                    pages.append(([], nil))
+                    used = 0
+                }
+                if !pages[pages.count - 1].rows.isEmpty { used += rowsStack.spacing }
+                pages[pages.count - 1].rows.append(row)
+                used += height
+            }
+            pageIndex = min(max(0, pageIndex), pages.count - 1)
+            if let pageAnchor, !pages[pageIndex].rows.contains(where: { ($0 as? ProviderRowView)?.providerID == pageAnchor }) {
+                pageIndex = pages.firstIndex { page in
+                    page.rows.contains { ($0 as? ProviderRowView)?.providerID == pageAnchor }
+                } ?? 0
+            }
+            let page = pages[pageIndex]
+            pageAnchor = (page.rows.first as? ProviderRowView)?.providerID
+            for row in rows {
+                row.isHidden = !page.rows.contains(row)
+                if !row.isHidden { (row as? ProviderRowView)?.showDetailRange(page.details) }
+            }
+            pageLabel.stringValue = "\(pageIndex + 1) / \(pages.count)"
+            previousPage.isEnabled = pageIndex > 0
+            nextPage.isEnabled = pageIndex + 1 < pages.count
+        } else {
+            pageIndex = 0
+            pageAnchor = nil
         }
-        if !historyRow.isHidden {
-            if insightsHeight > 0 { insightsHeight += insightStack.spacing }
-            insightsHeight += historyRow.fittingSize.height
-        }
-        // 顶部 14 + header 约 31 + 间距 12 + rows + 间距 8 + footer 约 16 + 底部 10
-        let height = min(720, max(160, rowsHeight + 92 + insightsHeight))
-        let size = NSSize(width: 380, height: height)
+        let size = NSSize(width: 380, height: pager.isHidden ? min(availableHeight, max(150, fullHeight)) : availableHeight)
         preferredContentSize = size
         view.invalidateIntrinsicContentSize()
         view.setFrameSize(size)
@@ -567,8 +680,7 @@ final class QuotaPopoverViewController: NSViewController {
         }
     }
 
-    private func timeText(_ date: Date?) -> String {
-        guard let date else { return "--:--" }
+    private func timeText(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return formatter.string(from: date)
@@ -593,7 +705,10 @@ final class QuotaPopoverViewController: NSViewController {
             row.setDragging(true)
         case .changed:
             reorderIfNeeded(row: row, location: recognizer.location(in: rowsStack))
-        case .ended, .cancelled, .failed:
+        case .cancelled, .failed:
+            row.setDragging(false)
+            draggingRow = nil
+        case .ended:
             row.setDragging(false)
             draggingRow = nil
             let order = rowsStack.arrangedSubviews.compactMap { ($0 as? ProviderRowView)?.providerID }
@@ -621,7 +736,43 @@ final class QuotaPopoverViewController: NSViewController {
         }
     }
 
-    @objc private func refreshTapped() { onRefresh?() }
+    func setPanelVisible(_ visible: Bool) {
+        panelVisible = visible
+        if !visible { headerHint.reset() }
+        updateRefreshMark()
+    }
+
+    @objc private func updateRefreshMark() {
+        guard panelVisible && lastRefreshing else {
+            refreshDelay?.cancel()
+            refreshDelay = nil
+            showingRefreshMark = false
+            spinner.stopAnimation(nil)
+            refreshButton.symbolName = "arrow.clockwise"
+            return
+        }
+        if showingRefreshMark {
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                spinner.stopAnimation(nil)
+                refreshButton.symbolName = "hourglass"
+            } else {
+                refreshButton.image = nil
+                spinner.startAnimation(nil)
+            }
+        } else if refreshDelay == nil {
+            let delay = DispatchWorkItem { [weak self] in
+                guard let self, self.panelVisible, self.lastRefreshing else { return }
+                self.refreshDelay = nil
+                self.showingRefreshMark = true
+                self.updateRefreshMark()
+            }
+            refreshDelay = delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: delay)
+        }
+    }
+
+    @objc private func refreshTapped() { if !lastRefreshing { onRefresh?() } }
+    @objc private func selectServices() { onSelectServices?() }
     @objc private func settingsTapped() { onOpenSettings?() }
     @objc private func historyTapped() { onHistory?() }
     @objc private func quitTapped() { NSApplication.shared.terminate(nil) }
@@ -684,15 +835,20 @@ final class StatusDotView: NSView {
     }
 }
 
-final class ProviderRowView: NSView {
+final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
+    let toggleButton = NSButton()
+    private let stack = NSStackView()
+    private let detail = NSStackView()
+    private var collapsedWarning: NSTextField?
+    private var isExpanded = false
+    private let onToggle: () -> Void
     let providerID: String
+    fileprivate let summaryHeader = NSView()
     private let provider: ProviderStatus
     private let todaySpent: Double?
     private let checkinDone: Bool
     private let checkinStreak: Int
     private let costText: String?
-    private let category: String
-    private let showsCategory: Bool
     private let onConfigure: () -> Void
     private let onCheckin: () -> Void
     private let onStatus: (() -> Void)?
@@ -707,24 +863,24 @@ final class ProviderRowView: NSView {
 
     init(
         provider: ProviderStatus,
+        expanded: Bool = false,
+        preferredWindow: String = "",
+        onToggle: @escaping () -> Void = {},
         todaySpent: Double?,
         checkinDone: Bool,
         checkinStreak: Int,
         costText: String? = nil,
-        category: String,
-        showsCategory: Bool,
         onConfigure: @escaping () -> Void,
         onCheckin: @escaping () -> Void,
         onStatus: (() -> Void)? = nil
     ) {
+        self.onToggle = onToggle
         self.providerID = provider.id
         self.provider = provider
         self.todaySpent = todaySpent
         self.checkinDone = checkinDone
         self.checkinStreak = checkinStreak
         self.costText = costText
-        self.category = category
-        self.showsCategory = showsCategory
         self.onConfigure = onConfigure
         self.onCheckin = onCheckin
         self.onStatus = onStatus
@@ -734,7 +890,10 @@ final class ProviderRowView: NSView {
         layer?.backgroundColor = NSColor.clear.cgColor
 
         let style = ProviderStyles.style(for: provider.id)
-        let stack = NSStackView()
+        detail.orientation = .vertical
+        detail.alignment = .width
+        detail.spacing = 6
+        detail.wantsLayer = true
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
@@ -742,21 +901,25 @@ final class ProviderRowView: NSView {
         addSubview(stack)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Theme.design == .glass ? 9 : 0),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: Theme.design == .glass ? -6 : 0),
         ])
 
-        let badge = LogoBadgeView(provider: provider.id, color: style.color, size: 24)
+        let ledger = Theme.design == .claude
+        let badge = ProviderMarkView(provider: provider.id, size: ledger ? 21 : 24)
 
         let name = label(style.shortName, size: 15, weight: .semibold)
         let statusDot = StatusDotView()
         statusDot.translatesAutoresizingMaskIntoConstraints = false
         statusDot.widthAnchor.constraint(equalToConstant: 6).isActive = true
         statusDot.heightAnchor.constraint(equalToConstant: 6).isActive = true
-        statusDot.color = provider.connection.color
-        statusDot.toolTip = provider.connection == .online
+        statusDot.color = provider.cached == true ? Theme.tertiary : provider.connection.color
+        statusDot.toolTip = provider.cacheDescription ?? (provider.connection == .online
             ? "已连接"
-            : (provider.error ?? provider.detail ?? provider.connection.title)
+            : (provider.error ?? provider.detail ?? provider.connection.title))
+        statusDot.setAccessibilityElement(true)
+        statusDot.setAccessibilityRole(.image)
+        statusDot.setAccessibilityLabel(statusDot.toolTip)
         let nameRow = NSStackView(views: [name, statusDot])
         nameRow.orientation = .horizontal
         nameRow.spacing = 5
@@ -770,14 +933,6 @@ final class ProviderRowView: NSView {
                 badge.toolTip = "今日已签到"
                 badge.setAccessibilityLabel("今日已签到")
                 nameRow.addArrangedSubview(badge)
-            } else {
-                let checkin = NSButton(title: "签到", target: self, action: #selector(checkinTapped))
-                checkin.isBordered = false
-                checkin.bezelStyle = .inline
-                checkin.font = .systemFont(ofSize: 10.5, weight: .medium)
-                checkin.contentTintColor = Theme.accent
-                checkin.setAccessibilityLabel("签到 \(style.shortName)")
-                nameRow.addArrangedSubview(checkin)
             }
         }
         if let serviceStatus = provider.serviceStatus, serviceStatus != "ok" {
@@ -788,147 +943,166 @@ final class ProviderRowView: NSView {
             )
             statusButton.isBordered = false
             statusButton.font = .systemFont(ofSize: 10, weight: .medium)
-            statusButton.contentTintColor = serviceStatus == "outage" ? .systemRed : .systemOrange
+            statusButton.contentTintColor = serviceStatus == "outage" ? Theme.danger : Theme.warning
             statusButton.toolTip = provider.serviceStatusDescription
             statusButton.setAccessibilityLabel("查看 \(style.shortName) 服务状态")
             nameRow.addArrangedSubview(statusButton)
         }
         if provider.status == "warn" && isExhausted(provider) {
-            nameRow.addArrangedSubview(label("已用尽", size: 10, weight: .medium, color: .systemRed))
+            nameRow.addArrangedSubview(label("已用尽", size: 10, weight: .medium, color: Theme.danger))
         }
         if provider.status == "error" {
-            nameRow.addArrangedSubview(label("出错", size: 10, weight: .medium, color: .systemRed))
+            nameRow.addArrangedSubview(label("出错", size: 10, weight: .medium, color: Theme.danger))
         }
         if provider.status == "unconfigured" {
-            nameRow.addArrangedSubview(label("待配置", size: 10, weight: .medium, color: .systemOrange))
+            nameRow.addArrangedSubview(label("待配置", size: 10, weight: .medium, color: Theme.warning))
         }
 
-        let subText = provider.displaySubtitle
-        let info = NSStackView(views: subText.isEmpty ? [nameRow] : [nameRow, label(subText, size: 12, color: Theme.tertiary)])
-        info.orientation = .vertical
-        info.alignment = .leading
-        info.spacing = 1
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let value = label(provider.displayPrimaryValue, size: 22, weight: .semibold, color: valueColor(provider), monospaced: true)
+        let subText = provider.quotaSubtitle
+        let headline = provider.metrics.first { $0.label == preferredWindow && $0.kind == "percent" && $0.remainingPercent != nil } ?? provider.primaryMetric
+        let ink = headline?.remainingPercent.map { $0 > QuotaStyle.warningPercent ? Theme.text : QuotaSeverity.from(remaining: $0).color } ?? valueColor(provider)
+        let value = label(headline.map(provider.valueText) ?? provider.displayPrimaryValue, size: ledger ? 25 : 22, weight: .semibold, color: ink, monospaced: true)
         value.alignment = .right
+        value.identifier = NSUserInterfaceItemIdentifier("primary-quota")
+        if ledger { value.font = NSFont(name: "Georgia", size: 26) ?? value.font }
 
         let valueRow = NSStackView()
         valueRow.orientation = .horizontal
         valueRow.alignment = .firstBaseline
         valueRow.spacing = 4
         valueRow.addArrangedSubview(value)
-        if let unit = provider.unitSuffix {
-            valueRow.addArrangedSubview(label(unit, size: 11, color: Theme.tertiary))
+        if let window = headline, window.kind == "percent" {
+            valueRow.insertArrangedSubview(label(window.label + "剩余", size: 11, color: Theme.secondary), at: 0)
         }
-        let valueStack = NSStackView()
-        valueStack.orientation = .vertical
-        valueStack.alignment = .trailing
-        valueStack.spacing = 2
-        valueStack.addArrangedSubview(valueRow)
-        if let captionText = valueCaption(provider, todaySpent: todaySpent), !captionText.isEmpty {
-            let caption = label(captionText, size: 10, color: Theme.secondary)
-            caption.alignment = .right
-            valueStack.addArrangedSubview(caption)
-        }
-
-        if valueCaption(provider, todaySpent: todaySpent) == nil,
-           provider.id == "deepseek",
-           let supporting = compactDetail(
-               provider.metrics.first(where: { $0.kind == "credit" })?.detail
-               ?? provider.metrics.first(where: { $0.kind == "text" })?.detail
-           ) {
-            let caption = label(supporting, size: 10, color: Theme.tertiary)
-            caption.alignment = .right
-            valueStack.addArrangedSubview(caption)
+        let body = NSStackView(views: [nameRow])
+        body.orientation = .vertical
+        body.alignment = .leading
+        body.spacing = 2
+        if !subText.isEmpty {
+            let subtitle = label(subText, size: 11, color: Theme.secondary)
+            subtitle.toolTip = subText
+            subtitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            body.addArrangedSubview(subtitle)
         }
 
-        if showsCategory {
-            let categoryLabel = label(category, size: 11, weight: .semibold, color: Theme.secondary)
-            categoryLabel.setAccessibilityLabel("分组：\(category)")
-            stack.addArrangedSubview(categoryLabel)
-            categoryLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        var captions: [String] = []
+        if headline?.kind != "percent", let unit = provider.unitSuffix { captions.append(unit) }
+        if let headline, headline.kind == "percent", let reset = headline.detail, !reset.isEmpty { captions.append(reset) }
+        if let spent = valueCaption(provider, todaySpent: todaySpent) { captions.append(spent) }
+        else if provider.id == "deepseek", let detail = compactDetail(provider.creditMetric?.detail ?? provider.metrics.first(where: { $0.kind == "text" })?.detail) {
+            captions.append(detail)
         }
 
-        let header = NSStackView(views: [badge, info, spacer, valueStack])
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.spacing = 9
+        toggleButton.isBordered = false
+        toggleButton.title = ""
+        toggleButton.image = NSImage(systemSymbolName: expanded ? "chevron.up" : "chevron.down", accessibilityDescription: nil)
+        toggleButton.setAccessibilityLabel((expanded ? "收起 " : "展开 ") + style.shortName)
+        toggleButton.setAccessibilityExpanded(expanded)
+        toggleButton.identifier = NSUserInterfaceItemIdentifier("toggle-" + provider.id)
+        toggleButton.target = self
+        toggleButton.action = #selector(toggleDetails)
+        toggleButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        toggleButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        let canExpand = provider.hasExpandableWindows
+        toggleButton.contentTintColor = Theme.accent
+        let header = summaryHeader
+        let metricColumn = NSStackView(views: [valueRow])
+        metricColumn.orientation = .vertical
+        metricColumn.alignment = .trailing
+        metricColumn.spacing = 1
+        if !captions.isEmpty {
+            metricColumn.addArrangedSubview(label(captions.joined(separator: " · "), size: 11, color: Theme.secondary))
+        }
+        let rightInset: CGFloat = 28
+        for child in [badge as NSView, body, metricColumn] {
+            child.translatesAutoresizingMaskIntoConstraints = false
+            header.addSubview(child)
+        }
+        NSLayoutConstraint.activate([
+            badge.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+            badge.centerYAnchor.constraint(equalTo: name.centerYAnchor),
+            body.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 9),
+            body.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            body.topAnchor.constraint(greaterThanOrEqualTo: header.topAnchor, constant: 3)
+        ])
+        NSLayoutConstraint.activate([
+            metricColumn.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -rightInset),
+            captions.isEmpty
+                ? metricColumn.centerYAnchor.constraint(equalTo: header.centerYAnchor)
+                : metricColumn.topAnchor.constraint(equalTo: header.topAnchor, constant: 3),
+            metricColumn.leadingAnchor.constraint(greaterThanOrEqualTo: body.trailingAnchor, constant: 6),
+            header.heightAnchor.constraint(greaterThanOrEqualTo: metricColumn.heightAnchor, constant: 6)
+        ])
+        if canExpand {
+            header.addSubview(toggleButton)
+            toggleButton.translatesAutoresizingMaskIntoConstraints = false
+            toggleButton.trailingAnchor.constraint(equalTo: header.trailingAnchor).isActive = true
+            toggleButton.centerYAnchor.constraint(equalTo: name.centerYAnchor).isActive = true
+            let click = NSClickGestureRecognizer(target: self, action: #selector(toggleDetails))
+            click.delegate = self
+            header.addGestureRecognizer(click)
+        }
         stack.addArrangedSubview(header)
         header.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        header.heightAnchor.constraint(equalToConstant: 46).isActive = true
 
         // 可选成本行（如 OpenCode）；数据来自 ProviderStatus 的嵌套 cost，缺省不占位。
         let hasCostLine = !(costText?.isEmpty ?? true)
-        if let costText, hasCostLine {
+        if canExpand, let costText, hasCostLine {
             let cost = label(costText, size: 10, color: Theme.tertiary)
             cost.lineBreakMode = .byTruncatingTail
             cost.setAccessibilityLabel("成本")
-            stack.addArrangedSubview(cost)
-            cost.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            detail.addArrangedSubview(cost)
         }
 
-        let percentMetrics = provider.metrics.filter { $0.kind == "percent" }
-        for (index, metric) in percentMetrics.prefix(3).enumerated() {
-            let remaining = metric.remainingPercent ?? 0
-            let used = metric.usedPercent ?? max(0, 100 - remaining)
-            let severity = QuotaSeverity.from(remaining: remaining)
-            let primary = index == 0
-            let titleSize: CGFloat = primary ? 13 : 12
-
-            // 维度名在左，剩余在右；重置时间放到进度条下方，避免左右来回找对应关系。
-            let meta = NSStackView()
-            meta.orientation = .horizontal
-            meta.spacing = 8
-            meta.alignment = .centerY
-            meta.addArrangedSubview(label(
-                metric.label,
-                size: titleSize,
-                weight: .medium,
-                color: Theme.secondary
-            ))
-            let metaSpacer = NSView()
-            metaSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-            meta.addArrangedSubview(metaSpacer)
-            if percentMetrics.count > 1, !primary {
-                meta.addArrangedSubview(label(
-                    "剩 \(Int(remaining.rounded()))%",
-                    size: titleSize,
-                    weight: .semibold,
-                    color: remaining <= QuotaStyle.warningPercent ? severity.color : Theme.secondary
-                ))
-            }
-            if let detail = metric.detail, !detail.isEmpty {
-                let detailText = primary ? "已用 \(Int(used.rounded()))% · \(detail)" : "· \(detail)"
-                meta.addArrangedSubview(label(detailText, size: 9, color: Theme.tertiary))
-            }
-            stack.addArrangedSubview(meta)
-            meta.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-
-            // 行业语义：填充 = 已使用，不再用“剩余”填充。
-            let barColor = remaining <= QuotaStyle.warningPercent ? severity.color : QuotaStyle.healthyColor
-            let visualProgress = used > 0 ? max(0.03, used / 100) : 0
-            let bar = BarView(progress: visualProgress, color: barColor)
-            bar.translatesAutoresizingMaskIntoConstraints = false
-            stack.addArrangedSubview(bar)
-            bar.heightAnchor.constraint(equalToConstant: primary ? 4 : 3).isActive = true
-            bar.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-
+        var percentMetrics = provider.metrics.filter { $0.kind == "percent" && $0.remainingPercent != nil }
+        if let headline, let index = percentMetrics.firstIndex(where: { $0.id == headline.id }), index != 0 {
+            percentMetrics.insert(percentMetrics.remove(at: index), at: 0)
+        }
+        if let limiting = provider.riskMetric, limiting.id != headline?.id, provider.riskTier <= 1 {
+            let warning = label(provider.riskDescription, size: 12, color: Theme.danger)
+            collapsedWarning = warning
+            stack.addArrangedSubview(warning)
+        }
+        if canExpand, let credit = provider.creditMetric {
+            let title = credit.currency?.isEmpty == false ? "账户余额" : "剩余积分"
+            let caption = compactDetail(credit.detail) ?? provider.connection.title
+            detail.addArrangedSubview(label(title + " · " + caption, size: 13, color: Theme.secondary))
+            if headline?.id != credit.id { detail.addArrangedSubview(label(provider.valueText(credit) + (credit.currency?.isEmpty == false ? "" : " 积分"), size: 14)) }
+        }
+        for metric in canExpand ? percentMetrics : [] where metric.id != headline?.id {
+            guard let remaining = metric.remainingPercent else { continue }
+            let title = label(metric.label, size: 12, weight: .semibold)
+            let reset = label(metric.detail ?? "", size: 11, color: Theme.secondary)
+            reset.lineBreakMode = .byTruncatingTail
+            let figureText = "剩 " + quotaPercentText(remaining) + "%"
+            let figure = label(figureText, size: 13, weight: .semibold, monospaced: true)
+            title.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+            let meta = NSStackView(views: [title, reset, NSView(), figure])
+            meta.alignment = .firstBaseline
+            meta.spacing = 6
+            let color = remaining <= QuotaStyle.warningPercent ? QuotaSeverity.from(remaining: remaining).color : QuotaStyle.healthyColor
+            let bar = BarView(progress: remaining / 100, color: color)
+            bar.setAccessibilityLabel(metric.label + "剩余额度")
+            let period = NSStackView(views: [meta, bar])
+            period.orientation = .vertical
+            period.alignment = .width
+            period.spacing = 4
+            period.edgeInsets = NSEdgeInsets(top: 0, left: ledger ? 0 : 33, bottom: 3, right: rightInset)
+            detail.addArrangedSubview(period)
+            bar.heightAnchor.constraint(equalToConstant: 4).isActive = true
         }
 
-        if !["deepseek", "trae", "workbuddy"].contains(provider.id),
+        if canExpand, !["deepseek", "trae", "workbuddy"].contains(provider.id),
            let supporting = compactDetail(
                     provider.metrics.first(where: { $0.kind == "credit" })?.detail
                     ?? provider.metrics.first(where: { $0.kind == "text" })?.detail
                   ) {
             let detailLabel = label(supporting, size: 10, color: Theme.tertiary)
             detailLabel.lineBreakMode = .byTruncatingTail
-            stack.addArrangedSubview(detailLabel)
-            detailLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            detail.addArrangedSubview(detailLabel)
         }
+
+        setExpanded(expanded, animated: false)
 
         if provider.status == "unconfigured" || provider.status == "error" {
             let actionRow = NSStackView()
@@ -942,14 +1116,18 @@ final class ProviderRowView: NSView {
             let messageLabel = wrappingLabel(
                 message,
                 size: 10,
-                color: provider.status == "error" ? .systemOrange : Theme.secondary,
+                color: provider.status == "error" ? Theme.warning : Theme.secondary,
                 width: 310
             )
             actionRow.addArrangedSubview(messageLabel)
             let actionSpacer = NSView()
             actionSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
             actionRow.addArrangedSubview(actionSpacer)
-            actionRow.addArrangedSubview(ClosureButton(title: "配置", onTap: onConfigure))
+            if ProviderRegistry.provider(withID: provider.id)?.supportsMultipleAccounts == true {
+                actionRow.addArrangedSubview(ClosureButton(title: "配置", onTap: onConfigure))
+            } else if provider.id == "doubao", provider.error?.contains("屏幕录制") == true {
+                actionRow.addArrangedSubview(ClosureButton(title: "读取权限…", onTap: DoubaoQuota.openPermissions))
+            }
             stack.addArrangedSubview(actionRow)
             actionRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             messageLabel.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -54).isActive = true
@@ -957,6 +1135,8 @@ final class ProviderRowView: NSView {
 
         stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10).isActive = true
 
+        layer?.cornerRadius = Theme.design == .glass ? 12 : 0
+        applyBackground()
         separator.wantsLayer = true
         separator.layer?.backgroundColor = Theme.separator.resolvedCGColor()
         separator.translatesAutoresizingMaskIntoConstraints = false
@@ -971,6 +1151,61 @@ final class ProviderRowView: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func showDetailRange(_ range: Range<Int>?) {
+        for (index, item) in detail.arrangedSubviews.enumerated() {
+            item.isHidden = range.map { !$0.contains(index) } ?? false
+        }
+    }
+
+    func detailPages(availableHeight: CGFloat, rowHeight: CGFloat) -> [Range<Int>]? {
+        let items = detail.arrangedSubviews
+        guard isExpanded, items.count > 1 else { return nil }
+        let room = availableHeight - (rowHeight - detail.fittingSize.height)
+        var start = 0
+        var used: CGFloat = 0
+        var parts: [Range<Int>] = []
+        for (i, item) in items.enumerated() {
+            let height = ceil(item.fittingSize.height)
+            if i > start && used + detail.spacing + height > room {
+                parts.append(start..<i)
+                start = i
+                used = 0
+            }
+            used += (i == start ? 0 : detail.spacing) + height
+        }
+        parts.append(start..<items.count)
+        return parts
+    }
+
+    func setExpanded(_ expanded: Bool, animated: Bool) {
+        guard expanded != isExpanded, provider.hasExpandableWindows else { return }
+        isExpanded = expanded
+        toggleButton.image = NSImage(systemSymbolName: expanded ? "chevron.up" : "chevron.down", accessibilityDescription: nil)
+        toggleButton.setAccessibilityLabel((expanded ? "收起 " : "展开 ") + ProviderStyles.style(for: providerID).shortName)
+        collapsedWarning?.isHidden = expanded
+        toggleButton.setAccessibilityExpanded(expanded)
+        if expanded {
+            stack.insertArrangedSubview(detail, at: 1)
+            detail.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            if animated { QuotaMotion.reveal(detail, duration: 0.14, offset: 3) }
+        } else {
+            detail.layer?.removeAllAnimations()
+            detail.removeFromSuperview()
+        }
+    }
+
+    @objc private func toggleDetails() { onToggle() }
+
+    func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldAttemptToRecognizeWith event: NSEvent) -> Bool {
+        guard let header = gestureRecognizer.view else { return false }
+        var hit = header.hitTest(header.superview?.convert(event.locationInWindow, from: nil) ?? .zero)
+        while let view = hit, view !== header {
+            if view is NSButton { return false }
+            hit = view.superview
+        }
+        return true
     }
 
     @objc private func checkinTapped() {
@@ -1015,11 +1250,11 @@ final class ProviderRowView: NSView {
         if dragging {
             color = Theme.text.withAlphaComponent(0.08)
         } else if hovered {
-            color = Theme.text.withAlphaComponent(0.04)
+            color = Theme.hover
         } else {
-            color = .clear
+            color = Theme.design == .glass ? Theme.surface : .clear
         }
-        layer?.backgroundColor = color.cgColor
+        layer?.backgroundColor = color.resolvedCGColor()
     }
 
     /// 去掉 “赠金 ¥0.00 ·” 这类没有参考价值的零值片段，避免底部一行被零占据。
@@ -1046,7 +1281,7 @@ final class ProviderRowView: NSView {
     }
 
     private func isExhausted(_ provider: ProviderStatus) -> Bool {
-        provider.metrics.contains { ($0.remainingPercent ?? 100) <= 20 }
+        provider.riskScore == 0
     }
 
     private func errorSummary(for provider: ProviderStatus) -> String {
@@ -1054,27 +1289,29 @@ final class ProviderRowView: NSView {
     }
 
     private func errorHint(for provider: ProviderStatus) -> String {
-        ProviderErrorText.hint(for: errorSummary(for: provider))
+        if ProviderRegistry.provider(withID: provider.id)?.supportsMultipleAccounts == false,
+           let reason = provider.error { return reason }
+        return ProviderErrorText.hint(for: errorSummary(for: provider))
     }
 
     private func valueCaption(_ provider: ProviderStatus, todaySpent: Double?) -> String? {
         guard provider.metrics.contains(where: { $0.kind == "credit" }),
               let spent = todaySpent, spent > 0.0001 else { return nil }
         if case .currency = provider.unit {
-            return String(format: "今日 -¥%.2f", spent)
+            return String(format: "今日 -%@%.2f", provider.currencySymbol, spent)
         }
         return "今日 -\(Int(spent.rounded()))"
     }
 
     private func valueColor(_ provider: ProviderStatus) -> NSColor {
-        if provider.status == "error" { return .labelColor }
-        if provider.metrics.contains(where: { $0.kind == "percent" }) {
-            return provider.health.color
+        if provider.status == "error" { return Theme.text }
+        if let remaining = provider.primaryMetric?.remainingPercent {
+            return QuotaSeverity.from(remaining: remaining).color
         }
         if let creditColor = QuotaStyle.creditColor(for: provider) {
             return creditColor
         }
-        return .labelColor
+        return Theme.text
     }
 }
 
@@ -1096,6 +1333,11 @@ final class BarView: NSView {
         self.color = color
         super.init(frame: .zero)
         wantsLayer = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.progressIndicator)
+        setAccessibilityLabel("剩余额度")
+        setAccessibilityValue(NSNumber(value: Double(self.progress * 100)))
+        setAccessibilityValueDescription(quotaPercentText(Double(self.progress * 100)) + "%")
     }
 
     required init?(coder: NSCoder) {
@@ -1105,7 +1347,8 @@ final class BarView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         Theme.text.withAlphaComponent(0.08).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 2, yRadius: 2).fill()
-        let width = progress > 0.001 ? max(4, bounds.width * progress) : 2
+        let width = bounds.width * progress
+        guard width > 0 else { return }
         color.setFill()
         NSBezierPath(
             roundedRect: NSRect(x: 0, y: 0, width: width, height: bounds.height),
@@ -1116,7 +1359,8 @@ final class BarView: NSView {
 
 
 final class HeaderIconButton: NSButton {
-    private var hovering = false
+    var hintText = ""
+    var onHover: ((HeaderIconButton?) -> Void)?
     var symbolName: String {
         didSet { applySymbol() }
     }
@@ -1125,8 +1369,8 @@ final class HeaderIconButton: NSButton {
         self.symbolName = symbol
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 28).isActive = true
-        heightAnchor.constraint(equalToConstant: 28).isActive = true
+        widthAnchor.constraint(equalToConstant: 32).isActive = true
+        heightAnchor.constraint(equalToConstant: 32).isActive = true
         isBordered = false
         bezelStyle = .inline
         imagePosition = .imageOnly
@@ -1136,16 +1380,25 @@ final class HeaderIconButton: NSButton {
         applySymbol()
     }
 
+    override var isEnabled: Bool {
+        didSet { alphaValue = isEnabled ? 1 : 0.55 }
+    }
+    override var acceptsFirstResponder: Bool { isEnabled }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
+    }
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
     private func applySymbol() {
-        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
         let description = accessibilityLabel() ?? toolTip
         image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)?
             .withSymbolConfiguration(config)
-        contentTintColor = Theme.secondary
+        contentTintColor = Theme.accent
     }
 
     /// 供调用方在设置 tooltip/label 后刷新图像的无障碍描述。
@@ -1159,67 +1412,20 @@ final class HeaderIconButton: NSButton {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: self,
             userInfo: nil
         ))
     }
 
     override func mouseEntered(with event: NSEvent) {
-        hovering = true
+        onHover?(self)
         layer?.backgroundColor = Theme.hover.resolvedCGColor()
     }
 
     override func mouseExited(with event: NSEvent) {
-        hovering = false
+        onHover?(nil)
         layer?.backgroundColor = NSColor.clear.cgColor
-    }
-}
-
-final class LogoBadgeView: NSView {
-    private let size: CGFloat
-    private let imageView = NSImageView()
-
-    init(provider: String, color: NSColor, size: CGFloat) {
-        self.size = size
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: size).isActive = true
-        heightAnchor.constraint(equalToConstant: size).isActive = true
-
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        if let image = ProviderLogo.image(for: provider, size: size, color: .black) {
-            image.isTemplate = true
-            imageView.image = image
-        } else {
-            imageView.image = NSImage(systemSymbolName: "circle.dashed", accessibilityDescription: nil)
-        }
-        addSubview(imageView)
-        NSLayoutConstraint.activate([
-            imageView.topAnchor.constraint(equalTo: topAnchor),
-            imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-        updateInk()
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        updateInk()
-    }
-
-    func refreshInk() {
-        updateInk()
-    }
-
-    private func updateInk() {
-        imageView.contentTintColor = NSColor.labelColor.resolvedForAppearance()
     }
 }
 

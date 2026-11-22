@@ -15,7 +15,16 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     /// 正在投递中的通知键，防止同一轮多次 render 重复发送。
     private var inFlight: Set<String> = []
 
+    typealias Submit = (String, String, @escaping (Bool) -> Void) -> Void
+    private let submit: Submit
+
+    init(submit: @escaping Submit) {
+        self.submit = submit
+        super.init()
+    }
+
     private override init() {
+        submit = Self.submitToSystem
         super.init()
         center.delegate = self
     }
@@ -28,6 +37,18 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         center.getNotificationSettings { settings in
             DispatchQueue.main.async { completion(settings.authorizationStatus) }
         }
+    }
+
+    func presentationStatus(completion: @escaping (UNAuthorizationStatus, String) -> Void) {
+        center.getNotificationSettings { settings in
+            let style = Self.presentationText(alertsEnabled: settings.alertSetting == .enabled, style: settings.alertStyle)
+            DispatchQueue.main.async { completion(settings.authorizationStatus, style) }
+        }
+    }
+
+    static func presentationText(alertsEnabled: Bool, style: UNAlertStyle) -> String {
+        guard alertsEnabled, style != .none else { return "未开启弹出提示" }
+        return style == .alert ? "允许提醒窗口" : "允许横幅"
     }
 
     func requestAuthorization(completion: @escaping (Bool) -> Void) {
@@ -47,9 +68,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
             snapshot: snapshot,
             staleHours: config.int("notifications.staleHours", default: 12),
             now: now
-        ) {
+        ), !hasNotified(Self.dedupePath(.stale), config: config), !inFlight.contains("stale") {
             let path = Self.dedupePath(.stale)
-            guard !hasNotified(path, config: config), !inFlight.contains("stale") else { return }
             inFlight.insert("stale")
             deliver(
                 title: stale.title,
@@ -58,15 +78,16 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
                 dedupeValues: [path: Self.todayKey(now)],
                 config: config
             )
-            return
         }
 
-        let percentLimit = config.double("notifications.percent", default: 20)
+        let percentLimit = QuotaStyle.percent(min(100, max(0, config.double("notifications.percent", default: 20))))
         let subscriptionDays = config.int("notifications.subscriptionDays", default: 3)
         let credentialDays = config.int("notifications.credentialDays", default: 60)
         let accounts = AccountStore(config: config)
 
-        for provider in snapshot.providers where provider.status != "disabled" {
+        for provider in snapshot.providers where provider.status != "disabled" && provider.cached != true {
+            let stamp = FlexibleDateParser.date(from: provider.sampledAt ?? snapshot.sampledAt ?? snapshot.updatedAt)
+            if provider.isUsable, let stamp, now.timeIntervalSince(stamp) >= Double(max(1, config.int("notifications.staleHours", default: 12))) * 3600 { continue }
             let account = accounts.activeAccount(for: provider.id)
 
             // 1) 凭据失效优先：额度取不到时，先让用户重新登录。
@@ -101,27 +122,13 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
                     config: config,
                     now: now
                 )
-                continue
             }
 
             // 3) 低额度 / 低余额（原有行为）。
-            var message: String?
-            var kind: String?
-            if let remaining = provider.metrics.first(where: { $0.kind == "percent" })?.remainingPercent,
-               remaining <= percentLimit {
-                message = "剩余 \(Int(remaining.rounded()))%，低于 \(Int(percentLimit))%"
-                kind = "percent"
-            } else if let threshold = QuotaStyle.creditThresholds[provider.id],
-                      let value = QuotaStyle.remainingNumber(provider),
-                      value <= threshold {
-                let unit = provider.id == "deepseek" ? "¥" : "积分"
-                message = "剩余 \(unit)\(formatted(value))，低于阈值 \(unit)\(formatted(threshold))"
-                kind = "credit"
-            }
-            guard let message, let kind else { continue }
-            let path = Self.quotaDedupePath(provider.id)
+            guard let (kind, message) = Self.quotaAlert(for: provider, percentLimit: percentLimit) else { continue }
+            let path = Self.quotaDedupePath(provider.id, account: provider.localAccountID ?? account?.id)
             guard !hasNotified(path, config: config) else { continue }
-            let inFlightKey = "quota.\(provider.id)"
+            let inFlightKey = path
             guard !inFlight.contains(inFlightKey) else { continue }
             inFlight.insert(inFlightKey)
             deliver(
@@ -137,8 +144,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    func sendTest() {
-        send(title: "Agent 额度", body: "这是一条低额度通知测试。")
+    func sendTest(completion: ((Bool) -> Void)? = nil) {
+        deliver(title: "Agent 额度", body: "这是一条低额度通知测试。", inFlightKey: nil, dedupeValues: [:], config: nil, completion: completion)
     }
 
     // MARK: - 判定（static 便于单测）
@@ -163,8 +170,12 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    static func quotaDedupePath(_ providerID: String) -> String {
-        "notifications.last.\(providerID)"
+    static func quotaDedupePath(_ providerID: String, account: String? = nil) -> String {
+        if let account, !account.isEmpty, account != AccountStore.legacyAccountID {
+            let key = Data(account.utf8).base64EncodedString()
+            return "notifications.accountQuota." + providerID + "." + key
+        }
+        return "notifications.last." + providerID
     }
 
     /// 快照超过 `staleHours` 未更新时返回提醒；未过期返回 nil。
@@ -173,18 +184,14 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         staleHours: Int,
         now: Date = Date()
     ) -> (title: String, body: String)? {
-        guard let updated = snapshot.updatedDate else { return nil }
-        let age = now.timeIntervalSince(updated)
-        guard age > 0 else { return nil }
-        let threshold = TimeInterval(max(1, staleHours)) * 3600
-        guard age >= threshold else { return nil }
-        let days = Int(age / 86_400)
-        let hours = max(1, Int(age / 3600))
-        let ageText = days >= 2 ? "\(days) 天" : "\(hours) 小时"
-        return (
-            title: "额度数据已过期",
-            body: "数据已 \(ageText)未更新，请检查网络或手动刷新；过期数据不再用于低额度判断。"
-        )
+        let cutoff = now.addingTimeInterval(-Double(max(1, staleHours)) * 3600)
+        let stale = snapshot.providers.filter {
+            guard $0.isUsable, let date = FlexibleDateParser.date(from: $0.sampledAt ?? snapshot.sampledAt ?? snapshot.updatedAt) else { return false }
+            return date <= cutoff
+        }
+        guard !stale.isEmpty else { return nil }
+        return ("额度数据已过期", stale.map(\.name).joined(separator: "、") + " 已超过 \(max(1, staleHours)) 小时没有成功更新")
+
     }
 
     /// 订阅到期提醒。自动续费且未到期时跳过；已到期或未开启自动续费时提醒。
@@ -304,53 +311,37 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         )
     }
 
-    private func send(title: String, body: String) {
-        deliver(title: title, body: body, inFlightKey: nil, dedupeValues: [:], config: nil)
-    }
-
     private func deliver(
         title: String,
         body: String,
         inFlightKey: String?,
         dedupeValues: [String: String],
-        config: ConfigStore?
+        config: ConfigStore?,
+        completion: ((Bool) -> Void)? = nil
     ) {
-        center.getNotificationSettings { [weak self] settings in
-            guard let self else { return }
-            let authorized = settings.authorizationStatus == .authorized
-                || settings.authorizationStatus == .provisional
-            guard authorized else {
-                DispatchQueue.main.async {
-                    if let inFlightKey { self.inFlight.remove(inFlightKey) }
-                }
+        submit(title, body) { [weak self] accepted in
+            if let inFlightKey { self?.inFlight.remove(inFlightKey) }
+            if accepted, let config, !dedupeValues.isEmpty {
+                for (path, value) in dedupeValues { config.set(path, value) }
+                try? config.save()
+            }
+            completion?(accepted)
+        }
+    }
+
+    private static func submitToSystem(title: String, body: String, completion: @escaping (Bool) -> Void) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+                DispatchQueue.main.async { completion(false) }
                 return
             }
-
             let content = UNMutableNotificationContent()
             content.title = title
             content.body = body
             content.sound = .default
-            let request = UNNotificationRequest(
-                identifier: "low-quota-\(UUID().uuidString)",
-                content: content,
-                trigger: nil
-            )
-            self.center.add(request) { [weak self] error in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    if let inFlightKey { self.inFlight.remove(inFlightKey) }
-                    guard error == nil else {
-                        NSLog("notification add failed: \(error?.localizedDescription ?? "unknown")")
-                        return
-                    }
-                    // 只有确认投递成功且已授权，才记为“今天已通知”。
-                    guard let config, !dedupeValues.isEmpty else { return }
-                    for (path, value) in dedupeValues {
-                        config.set(path, value)
-                    }
-                    try? config.save()
-                }
-            }
+            let request = UNNotificationRequest(identifier: "low-quota-" + UUID().uuidString, content: content, trigger: nil)
+            center.add(request) { error in DispatchQueue.main.async { completion(error == nil) } }
         }
     }
 
@@ -367,10 +358,23 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         config.string(path) == Self.todayKey()
     }
 
-    private func formatted(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = value < 10 ? 2 : 0
-        return formatter.string(from: NSNumber(value: value)) ?? "\(Int(value))"
+    static func quotaAlert(for provider: ProviderStatus, percentLimit: Double) -> (String, String)? {
+        guard provider.isUsable, provider.cached != true else { return nil }
+        var percent: (String, String)?
+        if let window = provider.lowestWindow, let left = window.remainingPercent, left <= percentLimit {
+            percent = ("percent", "\(window.label)剩 \(quotaPercentText(left))%（提醒线 \(Int(percentLimit))%）")
+        }
+        if let credit = provider.creditMetric, let value = QuotaStyle.remainingNumber(provider),
+           percent == nil || provider.riskMetric?.kind == "credit" {
+            let amount = provider.valueText(credit) + (credit.currency?.isEmpty != false ? " " + provider.pointUnit : "")
+            let unit = credit.currency.flatMap { $0.isEmpty ? nil : $0 } ?? provider.pointUnit
+            if value <= 0 {
+                return ("credit", "剩余 \(amount)（额度已耗尽 · \(unit)）")
+            }
+            if let limit = QuotaStyle.threshold(for: provider), limit > 0, value <= limit {
+                return ("credit", "剩余 \(amount)（提醒线 \(limit.formatted()) \(unit)）")
+            }
+        }
+        return percent
     }
 }

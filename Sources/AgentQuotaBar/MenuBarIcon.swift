@@ -1,120 +1,87 @@
 import AppKit
 
-/// 菜单栏图标：品牌 logo（单色）+ 圆环（圆环内是额度数字）。
-/// 总宽度 28pt，比文字标签省一大截。
-enum MenuBarIcon {
-    private static let baseLogo: CGFloat = 12
-    private static let baseRing: CGFloat = 15.4
-    private static let baseGap: CGFloat = 2.5
+struct MenuBarIcon {
+    let foreground: NSImage
+    let progress: NSImage?
+    var size: NSSize { foreground.size }
 
-    static func make(
-        provider: String,
-        value: String,
-        remaining: Double?,
-        severity: QuotaSeverity,
-        scale: CGFloat = 1.25,
-        ink: NSColor? = nil,
-        fixedInk: Bool = false,
-        appearance: NSAppearance? = nil
-    ) -> NSImage {
-        let s = max(0.8, min(1.6, scale))
-        let logoSize = baseLogo * s
-        let ringSize = baseRing * s
-        let drawsRing = remaining != nil || severity == .critical
-        let gap = (drawsRing ? baseGap : 2) * s
+    static func make(provider: String, value: String, remaining: Double?, scale: CGFloat = 1.25) -> Self {
+        let s = max(0.3, scale)
+        let logoSize = 12 * s
+        let ringSize = 15.4 * s
         let font = NSFont.monospacedDigitSystemFont(ofSize: 10 * s, weight: .medium)
-        // 文字宽度只取决于字体，与最终墨色无关。
-        let measureAttrs: [NSAttributedString.Key: Any] = [.font: font]
-        let textSize = drawsRing ? .zero : (value as NSString).size(withAttributes: measureAttrs)
-        let height = max(logoSize, ringSize) + 2
-        // 圆环不留白；积分/余额数字与 logo 居中对齐，只留很小的左右边距，避免贴隔壁图标。
-        let padLeft: CGFloat = drawsRing ? 0 : 4 * s
-        let padRight: CGFloat = drawsRing ? 0 : 4 * s
-        let contentWidth = logoSize + gap + (drawsRing ? ringSize : textSize.width)
-        let width = padLeft + contentWidth + padRight
-
-        let image = NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
-            // 在真正绘制时解析外观：状态栏按钮会把自己的外观（浅色/深色菜单栏）
-            // 设为当前绘制外观，这与 app 自身强制的外观无关。
-            let resolvedInk = Self.resolvedInk(ink, fixed: fixedInk, appearance: appearance ?? NSAppearance.currentDrawing())
-            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: resolvedInk]
-
-            // 浅色菜单栏改用深色墨，深色投影会糊；深色菜单栏保留原来的白色 + 投影效果。
-            if Self.isBright(resolvedInk) {
-                let shadow = NSShadow()
-                shadow.shadowColor = NSColor.black.withAlphaComponent(0.55)
-                shadow.shadowBlurRadius = 1.4
-                shadow.shadowOffset = NSSize(width: 0, height: -0.5)
-                shadow.set()
+        let text = value as NSString
+        let textSize = text.size(withAttributes: [.font: font])
+        let hasRing = remaining != nil
+        let padding = hasRing ? 0 : 4 * s
+        let valueX = padding + logoSize + (hasRing ? 2.5 : 2) * s
+        let size = NSSize(width: valueX + (hasRing ? ringSize : textSize.width) + padding, height: ringSize + 2)
+        let ring = NSRect(x: valueX, y: (size.height - ringSize) / 2, width: ringSize, height: ringSize)
+        let foreground = NSImage(size: size, flipped: false) { _ in
+            let logo = NSRect(x: padding, y: (size.height - logoSize) / 2, width: logoSize, height: logoSize)
+            drawLogo(provider: provider, in: logo, ink: .black)
+            if hasRing {
+                NSColor.black.withAlphaComponent(0.27).setStroke()
+                arc(in: ring, fraction: 1).stroke()
+                let digits = NSFont.monospacedDigitSystemFont(ofSize: ringSize * (value.count > 2 ? 0.32 : 0.40), weight: .semibold)
+                let attrs: [NSAttributedString.Key: Any] = [.font: digits, .foregroundColor: NSColor.black]
+                let measured = text.size(withAttributes: attrs)
+                text.draw(at: NSPoint(x: ring.midX - measured.width / 2, y: ring.midY - measured.height / 2), withAttributes: attrs)
             } else {
-                NSGraphicsContext.current?.cgContext.setShadow(offset: .zero, blur: 0, color: nil)
-            }
-
-            let logoRect = NSRect(x: padLeft, y: (height - logoSize) / 2, width: logoSize, height: logoSize)
-            drawLogo(provider: provider, in: logoRect, ink: resolvedInk)
-
-            if drawsRing {
-                let ringRect = NSRect(x: padLeft + logoSize + gap, y: (height - ringSize) / 2, width: ringSize, height: ringSize)
-                drawRing(
-                    in: ringRect,
-                    value: value,
-                    remaining: remaining,
-                    severity: severity,
-                    ink: resolvedInk,
-                    scale: s,
-                    fixedInk: fixedInk,
-                    appearance: appearance ?? NSAppearance.currentDrawing()
-                )
-            } else {
-                NSGraphicsContext.current?.cgContext.setShadow(offset: .zero, blur: 0, color: nil)
-                let origin = NSPoint(
-                    x: padLeft + logoSize + gap,
-                    y: (height - textSize.height) / 2
-                )
-                (value as NSString).draw(at: origin, withAttributes: attrs)
+                text.draw(at: NSPoint(x: valueX, y: (size.height - textSize.height) / 2), withAttributes: [.font: font, .foregroundColor: NSColor.black])
             }
             return true
         }
-        image.isTemplate = false
-        return image
-    }
-
-    /// 菜单栏墨色：
-    /// - 深色菜单栏保持调用方给的白色（现有观感）。
-    /// - 浅色菜单栏把“亮墨”换成深色，否则白字/白 logo 不可见。
-    /// - `fixedInk` 用于设置里的深色预览底，不参与自适应。
-    private static func resolvedInk(_ requested: NSColor?, fixed: Bool, appearance: NSAppearance) -> NSColor {
-        let base = requested ?? .white
-        guard !fixed, !isDarkMenuBar(appearance) else { return base }
-        return isBright(base) ? Theme.hex(0x111A1F) : base
-    }
-
-    /// 状态栏按钮的 effectiveAppearance 可能是 vibrantDark/vibrantLight；
-    /// `bestMatch(from: [.darkAqua, .aqua])` 不一定能识别，必须显式判断。
-    private static func isDarkMenuBar(_ appearance: NSAppearance) -> Bool {
-        switch appearance.name {
-        case .darkAqua, .vibrantDark:
-            return true
-        case .aqua, .vibrantLight:
-            return false
-        default:
-            return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        foreground.isTemplate = true
+        let progress = remaining.flatMap { remaining -> NSImage? in
+            guard remaining > 0 else { return nil }
+            let image = NSImage(size: size, flipped: false) { _ in
+                let green = Theme.isDark(NSAppearance.currentDrawing()) ? Theme.hex(0x53D883) : Theme.hex(0x178544)
+                green.setStroke()
+                let stroke = arc(in: ring, fraction: min(1, remaining / 100))
+                stroke.lineCapStyle = .round
+                stroke.stroke()
+                return true
+            }
+            image.cacheMode = .never
+            return image
         }
+        return Self(foreground: foreground, progress: progress)
     }
 
-    private static func isBright(_ color: NSColor) -> Bool {
-        guard let srgb = color.usingColorSpace(.sRGB) else { return true }
-        return srgb.brightnessComponent > 0.8
+    private static func arc(in rect: NSRect, fraction: Double) -> NSBezierPath {
+        let path = NSBezierPath()
+        path.lineWidth = max(1.25, rect.width * 0.085)
+        path.appendArc(withCenter: NSPoint(x: rect.midX, y: rect.midY),
+                       radius: (rect.width - path.lineWidth) / 2,
+                       startAngle: 90, endAngle: 90 - 360 * fraction, clockwise: true)
+        return path
+    }
+
+    func draw(in rect: NSRect) {
+        foreground.tintedTemplate(color: .labelColor).draw(in: rect)
+        progress?.draw(in: rect)
     }
 
     // MARK: - Logo
 
     private static func drawLogo(provider: String, in rect: NSRect, ink: NSColor) {
-        if let logo = ProviderLogo.menuMark(for: provider, size: rect.width, color: ink) {
+        if provider == "quota" {
+            ink.setStroke()
+            let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
+            ring.lineWidth = 1.5
+            ring.stroke()
+            let needle = NSBezierPath()
+            needle.move(to: NSPoint(x: rect.midX, y: rect.midY))
+            needle.line(to: NSPoint(x: rect.maxX - 2, y: rect.maxY - 2))
+            needle.stroke()
+            return
+        }
+        if let logo = ProviderLogo.image(for: provider, size: rect.width, color: ink) {
             logo.draw(in: rect)
             return
         }
-        let letter = provider == "workbuddy" ? "W" : "?"
+        let letter = ProviderStyles.style(for: provider).letter
         let font = NSFont.systemFont(ofSize: 10, weight: .bold)
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink]
         let text = letter as NSString
@@ -125,62 +92,22 @@ enum MenuBarIcon {
         )
     }
 
-    // MARK: - Ring
+}
 
-    private static func drawRing(
-        in rect: NSRect,
-        value: String,
-        remaining: Double?,
-        severity: QuotaSeverity,
-        ink: NSColor,
-        scale: CGFloat,
-        fixedInk: Bool,
-        appearance: NSAppearance
-    ) {
-        let ringColor = severity.color.resolvedForAppearance(appearance)
-        let line: CGFloat = max(1.25, rect.width * 0.085)
-        let center = NSPoint(x: rect.midX, y: rect.midY)
-        let radius = (rect.width - line) / 2
+// Only the arc needs a color of its own. AppKit draws the template underneath
+// with the same foreground and highlight treatment as adjacent status items.
+final class MenuBarProgressView: NSView {
+    var progress: NSImage? { didSet { needsDisplay = true } }
 
-        let track = NSBezierPath()
-        track.appendArc(withCenter: center, radius: radius, startAngle: 90, endAngle: -270, clockwise: true)
-        track.lineWidth = line
-        let trackColor: NSColor = severity == .neutral
-            ? ink.withAlphaComponent(0.32)
-            : ringColor.withAlphaComponent(0.30)
-        trackColor.setStroke()
-        track.stroke()
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
 
-        if let remaining {
-            let fraction = CGFloat(min(100, max(0, remaining)) / 100)
-            if fraction > 0.01 {
-                let progress = NSBezierPath()
-                progress.appendArc(
-                    withCenter: center,
-                    radius: radius,
-                    startAngle: 90,
-                    endAngle: 90 - 360 * fraction,
-                    clockwise: true
-                )
-                progress.lineWidth = line
-                progress.lineCapStyle = .round
-                ringColor.setStroke()
-                progress.stroke()
-            }
-        }
-
-        let font = NSFont.monospacedDigitSystemFont(
-            ofSize: rect.width * (value.count > 2 ? 0.32 : 0.40),
-            weight: .semibold
-        )
-        let textColor: NSColor = ink
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
-        NSGraphicsContext.current?.cgContext.setShadow(offset: .zero, blur: 0, color: nil)
-        let text = value as NSString
-        let size = text.size(withAttributes: attrs)
-        text.draw(
-            at: NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2),
-            withAttributes: attrs
-        )
+    override func draw(_ dirtyRect: NSRect) {
+        guard let button = superview as? NSStatusBarButton, let cell = button.cell else { return }
+        let rect = convert(cell.imageRect(forBounds: button.bounds), from: button)
+        progress?.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
     }
 }

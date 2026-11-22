@@ -14,7 +14,8 @@ struct ProviderDescriptor {
 }
 
 enum ProviderRegistry {
-    static let all: [ProviderDescriptor] = [
+    static let traeEditions = [("cn", "Trae CN（国内版）"), ("solo", "TRAE SOLO CN"), ("sg", "Trae（国际版）"), ("solo-sg", "TRAE SOLO（国际版）")]
+    static let builtins: [ProviderDescriptor] = [
         ProviderDescriptor(
             id: "codex", shortName: "Codex",
             nativeAppBundleIDs: ["com.openai.codex"],
@@ -35,7 +36,26 @@ enum ProviderRegistry {
             id: "trae", shortName: "Trae",
             nativeAppBundleIDs: ["cn.trae.app"],
             supportsSubscription: false, supportsCost: false, supportsMultipleAccounts: true),
+        ProviderDescriptor(
+            id: "doubao", shortName: "豆包",
+            nativeAppBundleIDs: [DoubaoQuota.bundleID],
+            supportsSubscription: false, supportsCost: false, supportsMultipleAccounts: false),
     ]
+
+    private static var local: [ProviderDescriptor] = []
+    static var all: [ProviderDescriptor] { builtins + local }
+
+    static func update(from rows: [ProviderStatus]) {
+        let reserved = Set(builtins.map(\.id))
+        local = rows.filter { !reserved.contains($0.id) }.map {
+            ProviderDescriptor(id: $0.id, shortName: $0.name, nativeAppBundleIDs: [],
+                               supportsSubscription: false, supportsCost: false, supportsMultipleAccounts: false)
+        }.sorted { $0.id < $1.id }
+    }
+
+    static func usesLocalQuota(_ id: String) -> Bool {
+        id == "doubao" || !builtins.contains { $0.id == id }
+    }
 
     static func provider(withID id: String) -> ProviderDescriptor? {
         all.first { $0.id == id }

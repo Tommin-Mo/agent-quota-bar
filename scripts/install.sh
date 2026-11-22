@@ -18,8 +18,11 @@ info() {
 [ -d "$APPS_DIR" ] || fail "$APPS_DIR not found"
 [ -w "$APPS_DIR" ] || fail "no write permission for $APPS_DIR (run as a user who can install apps; this script intentionally does not use sudo)"
 
-info "build"
-"$ROOT/scripts/build_app.sh"
+case "${1:-}" in
+  "") info "build"; "$ROOT/scripts/build_app.sh" ;;
+  --from-dist) info "install existing dist" ;;
+  *) fail "usage: install.sh [--from-dist]" ;;
+esac
 
 SOURCE="$ROOT/dist/AgentQuotaBar.app"
 [ -d "$SOURCE" ] || fail "build output missing: $SOURCE"
@@ -67,6 +70,14 @@ trap cleanup EXIT
 info "stage copy"
 ditto "$SOURCE" "$STAGE_APP" || fail "failed to copy build output to staging area"
 verify_app "$STAGE_APP" || fail "staged copy failed verification; existing app left untouched"
+
+CONFIG_FILE="${AGENT_QUOTA_CONFIG:-$HOME/.config/agent-quota/config.json}"
+DATA_DIR="$(dirname "$CONFIG_FILE")"
+SNAPSHOTS="$DATA_DIR/update-snapshots"
+(umask 077 && mkdir -p "$SNAPSHOTS")
+AUDIT="$(mktemp -d "$SNAPSHOTS/$(date +%Y%m%d-%H%M%S).XXXXXX")"
+python3 "$ROOT/scripts/update_history.py" before "$AUDIT" "$DATA_DIR/history.json"
+info "history baseline: $AUDIT"
 
 # 复制并校验成功之后才停掉正在运行的实例（旧 App 从未在未验证时被删除）
 for pattern in "$TARGET/Contents/MacOS/AgentQuotaBar" \
@@ -119,8 +130,10 @@ fi
 
 info "launch"
 if ! open "$TARGET"; then
-  echo "warning: installed to $TARGET, but launch failed. Open it manually." >&2
+  fail "installed to $TARGET, but launch failed; history baseline: $AUDIT"
 fi
+
+python3 "$ROOT/scripts/update_history.py" after "$AUDIT" "$DATA_DIR/history.json"
 
 echo "==> done. 后台签到 / 用量采样 LaunchAgent 会在 App 首次启动时自动安装。"
 echo "    卸载：$ROOT/scripts/uninstall.sh [--app] [--purge] [--all] [--dry-run]"

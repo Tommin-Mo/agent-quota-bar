@@ -10,16 +10,16 @@ final class ConfigStore {
     static let defaultConfig: [String: Any] = [
         "refreshSeconds": 300,
         "menuBarMode": "auto",
-        "menuBarIconScale": 1.25,
+        "menuBarIconScale": 1.43,
         "providerOrder": ["codex", "deepseek", "opencode", "trae", "workbuddy"],
         "hiddenProviders": [],
         "appearance": "system",
         "style": [
             "warningPercent": 45,
             "dangerPercent": 20,
-            "healthyColor": "#14B8A6",
-            "warningColor": "#F59E0B",
-            "dangerColor": "#DC2626",
+            "healthyColor": "",
+            "warningColor": "",
+            "dangerColor": "",
             "thresholds": ["trae": 200, "workbuddy": 500, "deepseek": 5],
         ],
         "notifications": [
@@ -81,27 +81,15 @@ final class ConfigStore {
     init() {
         url = Self.defaultURL
 
-        let fileExists = FileManager.default.fileExists(atPath: url.path)
         if let loaded = Self.readJSON(at: url) {
             values = loaded
-        } else if fileExists {
-            // 文件存在却无法解析：先备份，再以默认值重建，避免静默覆盖用户数据。
-            values = Self.defaultConfig
-            if let backup = Self.backupCorruptFile(at: url) {
-                corruptBackupURL = backup
-                loadError = "配置文件格式损坏，已备份到 \(backup.path) 并重建默认配置。"
-            } else {
-                loadError = "配置文件格式损坏且无法备份；为避免覆盖，本次不会写回默认值。"
-            }
         } else {
             values = Self.defaultConfig
-        }
-
-        if !FileManager.default.fileExists(atPath: url.path) {
-            do {
-                try save()
-            } catch {
-                lastSaveError = error.localizedDescription
+            // Re-read under the writer lock before initializing or repairing.
+            do { try save() }
+            catch {
+                loadError = error.localizedDescription
+                lastSaveError = loadError
             }
         }
     }
@@ -157,24 +145,39 @@ final class ConfigStore {
         return true
     }
 
+    /// Keep failed edits out of later, unrelated saves.
+    func withRollback<T>(_ change: () throws -> T) throws -> T {
+        let previous = values
+        let keys = dirtyKeys
+        do { return try change() }
+        catch { values = previous; dirtyKeys = keys; throw error }
+    }
+
     func save() throws {
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        do { try saveLocked() }
+        catch {
+            lastSaveError = error.localizedDescription
+            throw error
+        }
+    }
+
+    private func saveLocked() throws {
+        let fd = try FileWriteLock.acquire(for: url)
+        defer { close(fd) }
 
         var onDisk: [String: Any]?
-        if FileManager.default.fileExists(atPath: url.path) {
-            if let parsed = Self.readJSON(at: url) {
+        do {
+            let data = try Data(contentsOf: url)
+            if let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
                 onDisk = parsed
             } else if let backup = Self.backupCorruptFile(at: url) {
                 corruptBackupURL = backup
-                loadError = "配置文件格式损坏，已备份到 \(backup.path)。"
+                loadError = "配置文件格式损坏，已备份到 " + backup.path
             } else {
-                let message = "配置文件格式损坏且无法备份，为避免覆盖已停止写入。"
-                lastSaveError = message
                 throw ConfigStoreError.corruptFileNotBackedUp
             }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // First writer creates the file below.
         }
 
         // 磁盘上有可用配置时只合并改动过的键；首次创建则整份写入。
@@ -189,17 +192,8 @@ final class ConfigStore {
             merged = values
         }
 
-        do {
-            let data = try JSONSerialization.data(
-                withJSONObject: merged,
-                options: [.prettyPrinted, .sortedKeys]
-            )
-            try data.write(to: url, options: [.atomic])
-        } catch {
-            lastSaveError = error.localizedDescription
-            throw error
-        }
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let data = try JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys])
+        try FileWriteLock.writeAtomically(data, to: url)
         values = merged
         dirtyKeys.removeAll()
         lastSaveError = nil

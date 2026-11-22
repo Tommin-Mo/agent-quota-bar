@@ -1,9 +1,11 @@
 # AgentQuotaBar
 
-macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek** 的剩余额度，一眼看完。
+macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek / 豆包及本地接入的 Agent** 的剩余额度，一眼看完。
 原生 AppKit + 零依赖 Node collector，登录态复用本机已有凭据。按源码分发、需要本机构建，没有内置自动更新。
 
 ## 菜单栏
+
+以下截图来自历史版本。当前面板与设置以本机运行的版本为准。
 
 ![菜单栏示例](docs/menu-bar.png)
 
@@ -12,15 +14,15 @@ macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek** �
 - **百分比制（OpenCode / Codex）**：单色 logo + 圆环，数字在环里；
 - **余额/积分制（DeepSeek / Trae / WorkBuddy）**：不再画圆环，直接显示 `¥1.91`、`1,368`、`3,955` 这类具体数字。
 
-- `≤20%` 红、`≤45%` 橙、其余青色；余额/积分用中性白字；异常显示 `!`。
-- **图标大小可调**：设置 → 菜单栏 → 拖动滑块（80%–160%），菜单栏和预览实时变化。
-- **自动切换**：优先跟随前台 App（OpenCode / Codex / WorkBuddy / Trae）；OpenCode 还会读取本地 session 时间，CLI/后台场景再回退到百分比 used 上升、积分 consumed 增加、DeepSeek 余额下降。签到 +100、窗口重置、充值上涨都不会抢菜单栏图标。
-- 所有 logo 都是透明背景的单色标记，菜单栏图标会随浅色/深色菜单栏自动换墨色；WorkBuddy 使用透明猫脸，不再是白底方块。
+- 菜单栏额度环用绿色表示剩余额度，浅色背景用深绿，深色背景用亮绿。数字、Logo 和底轨跟随系统菜单栏前景色。额度面板单独使用警戒色。
+- **图标大小可调**：设置 → 菜单栏 → 拖动滑块（0.50×–1.50×，1.00× 对应基准 143%），菜单栏实时变化。
+- **自动切换**：依据额度实际消耗和 OpenCode 会话活动切换；签到 +100、窗口重置、充值上涨都不会抢菜单栏图标。
+- 所有 logo 都是透明背景的单色标记，菜单栏使用系统模板图标；WorkBuddy 使用透明猫脸，不再是白底方块。
 - 圆环模式不额外留边距；积分/余额的数字模式才在右侧留 8pt，避免贴到隔壁 App 图标。
 
 ![面板](docs/popover.png)
 
-面板顶部只保留精简标题与刷新状态，没有概览卡片；7 天趋势至少积累 2 天后才出现，避免第一天一根孤立柱子。每张卡片显示品牌 logo、名称、套餐与大号剩余值：百分比服务（OpenCode / Codex）额外显示按窗口拆分的消耗、进度条与「剩 X%」、重置时间；进度条填充量 = 已使用量。余额/积分服务（DeepSeek / Trae / WorkBuddy）显示余额或积分，以及有变化时的今日消耗。**上下拖动任意一行即可排序**。
+面板顶部显示「额度概览」与当前可见服务数；历史在独立窗口中按日展示。每张卡片以墨绿色单色 logo 区分服务形状，并显示名称和额度。原生面板主色为 `#0B6B5E`，深色模式的 Logo 为 `#86C6BD`。卡片显示套餐与大号剩余值：百分比服务（OpenCode / Codex）额外显示按窗口拆分的消耗、进度条与「剩 X%」、重置时间；进度条填充量 = 剩余量。余额/积分服务（DeepSeek / Trae / WorkBuddy）显示余额或积分，以及有变化时的今日消耗。**上下拖动任意一行即可排序**。
 
 网络断开时不会用 0/5 和一大段 curl 报错覆盖面板：会保留最近一次成功快照（`~/.config/agent-quota/last-snapshot.json`），显示「网络未连接 · 显示上次数据」，并在网络恢复后自动刷新。单个 provider 的 SSL / DNS / 超时错误也会收成「SSL 连接失败」「DNS 解析失败」「连接超时」这类短提示，不再显示 curl 原文。
 
@@ -41,6 +43,30 @@ macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek** �
 | OpenCode | Zen 余额（$）或 Go 的 5h/周/月 | Console Cookie（可 opt-in 从 Chrome 导入），或 Go API Key | 二选一 |
 | Trae | 剩余积分 + 已用 / 总量 | 本机登录态 → `/trae/api/v2/pay/ide_user_ent_usage` | 否 |
 | WorkBuddy | 剩余积分 + 连续签到天数 | 本机 WorkBuddy 安全存储自动解封 → 官方 billing 接口 | 否 |
+| 豆包 | 可用额度 | 豆包 Mac 客户端侧栏，本机文字识别 | 系统屏幕录制权限 |
+| 本地 Agent | 周期额度、积分或余额 | Agent 导出的 JSON 文件 | 在接入目录放入数据源 |
+
+豆包需要已登录、窗口打开并显示「可用额度」。设置 → 服务与账户 → 豆包 → 读取权限可打开 macOS 授权页。识别在本机完成，图像不落盘。暂时读不到时，已有数值保留最后读取时间。
+
+### 接入其他 Agent
+
+外接服务支持自选同源 Logo。从[当前版本的 theSVG 图标目录](https://github.com/glincker/thesvg/tree/241be3c0a36db376968029f24dbfce0131ec8c8c/public/icons)下载原始 SVG，优先选透明单色版本，与额度文件同名并排放置（如 `my-agent.svg`、`my-agent.json`）。刷新后生效。应用在本地核对文件来源，没有匹配图标时用服务名首字标识。
+
+打开设置 → 服务与账户 → 接入目录。每个服务写一个文件，例如 `my-agent.json`，下一次全量刷新后出现在服务列表。文件名是稳定标识，以小写字母开头，可包含小写字母、数字、连字符，最多 40 字符。保留文件名可延续顺序、设置和历史。
+
+```json
+{
+  "schema": 1,
+  "name": "My Agent",
+  "updatedAt": "2026-11-21T08:00:00+08:00",
+  "metrics": [
+    {"type": "percent", "label": "5 小时", "remaining": 96},
+    {"type": "percent", "label": "本周", "remaining": 83}
+  ]
+}
+```
+
+`updatedAt` 填数据实际采集时间。周期额度可提供 1–4 个名称不同的窗口和可选的 `resetAt`（含时区的 ISO 日期）。积分类提供单个 `{"type":"points","label":"剩余积分","remaining":1200}`，余额类提供单个 `{"type":"balance","label":"余额","remaining":8.5,"currency":"CNY"}`，支持 CNY、USD、EUR、GBP。零代表实际耗尽。超过 15 分钟标记为缓存，缓存不进入当日消耗。数据提供方用同目录临时文件写好后重命名替换，避免读取到半份数据。
 
 ## 安装
 
@@ -161,7 +187,7 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
 
 ### 历史
 
-- App 每次成功拿到数据后（含单家定向刷新）会写 `~/.config/agent-quota/history.json`（600）：每个 provider 每天一条，保留最近 **7 天**，字段包括 `date / provider / usedPercent / remainingPercent / balance / consumed / cost / tokens / status / account / plan / updatedAt`；面板的 7 天趋势从这里读，OpenCode 成本行直接读本地库。
+- App 每次成功拿到数据后（含单家定向刷新）会写 `~/.config/agent-quota/history.json`（600）：每个 provider 每天一条，保留最近 **35 天**，字段包括 `date / provider / usedPercent / remainingPercent / balance / consumed / cost / tokens / status / account / plan / updatedAt`；历史日历按当日消耗比例分档（0、大于 0 至不足 10%、10% 至不足 30%、30% 及以上）。订阅使用当天首次确定的周期，积分和余额使用当天首次有效余额作分母。整体取可计算服务的等权平均，确认的零消耗也计入。无法换算的服务保留原始明细，OpenCode 成本行直接读本地库。
 - `last-snapshot.json` 是离线缓存，不是历史；`usage.json` 只保留当天消费。
 - CLI 兜底：App 没运行时，可用 `scripts/quota history --record` 把当天成本写到独立的 `history/YYYY-MM-DD.json`（与 `history.json` 不共用目录），再用 `scripts/quota history` 一并查看。
 
@@ -178,13 +204,12 @@ OpenCode 的 Zen 余额同理：内置浏览器登录后自动抓 `__Host-consol
 ![设置](docs/settings.png)
 ![提醒](docs/alerts.png)
 
-设置收敛成 **4 页**：通用 / 菜单栏 / 服务 / 提醒。
+侧栏按任务分为四组，打开设置默认进入菜单栏。
 
-- **通用**：刷新频率、系统代理、外观（跟随系统 / 浅色 / 深色）、开机自启动；
-- **自动化**（同一页）：自动签到、签到时间、签到状态；
-- **菜单栏**：自动切换 / 固定一家 / 合并显示、图标大小、面板顺序；
-- **服务**：每家 provider 的显示开关 + 实时状态 + 配置入口；「账户…」可新增/编辑/删除账号；配置了多个账号时出现账户下拉，可直接切换；
-- **提醒**：充足/警戒/危险三种颜色、可拖拽的警戒/危险阈值、**积分阈值（Trae / WorkBuddy）与余额阈值（DeepSeek）分开设置**、低额度通知开关和百分比阈值、通知权限状态与测试通知；另有订阅到期（`notifications.subscriptionDays`，默认 3 天）、数据过期（`staleHours`，默认 12 小时）、凭据过期（`credentialDays`，默认 60 天）三类提醒，目前通过 `config.json` 调整阈值；
+- **显示**在菜单栏页集中提供切换方式、图标大小、主额度周期和界面外观。
+- **提醒**包括低额度通知和额度颜色，通知线与面板警戒色独立设置。
+- **服务**包括服务与账户、本机接入。可调整服务顺序、可见性和配置账户。
+- **应用**包括运行与连接、自动签到。
 - 面板右上角也直接有 **明暗切换**，不用进设置。
 
 ## 配置格式
@@ -292,7 +317,7 @@ ln -s "$PWD/scripts/agent-quota.swiftbar.js" \
 ./scripts/quota cost --pretty                # 今日消费 + 余额/累计消费 + OpenCode 本地成本
 ./scripts/quota cost --live                  # 先实时刷新再算（默认读 last-snapshot.json）
 ./scripts/quota usage --pretty               # usage.json 原始状态（不含密钥）
-./scripts/quota history --pretty             # App 7 天历史 + CLI 记录的每日成本
+./scripts/quota history --pretty             # App 35 天历史 + CLI 记录的每日成本
 ./scripts/quota history --record             # 兜底：记录今天成本到 history/YYYY-MM-DD.json
 ./scripts/quota accounts --pretty            # 多账号列表（不含凭据值）
 ./scripts/quota help
@@ -300,7 +325,7 @@ ln -s "$PWD/scripts/agent-quota.swiftbar.js" \
 
 - `snapshot` 输出 collector schema（`schema / updatedAt / sampledAt / providers[]`），字段与 App 内部一致，适合 SketchyBar、状态栏脚本或 CI 做集成；可能含账号标识（email / uid），不要公开转贴。
 - `cost` 输出 `{ schema, ok, day, stale, snapshotSource, snapshotAt, providers[{ id, name, unit, todaySpent, last7Days?, balance|consumed, tokens?, source?, sampledAt }] }`。DeepSeek / Trae / WorkBuddy 来自 `usage.json`，OpenCode 来自快照里的 `provider.cost`（本地库）。默认不联网，`--live` 才刷新；`stale: true` 表示 `usage.json` 不是今天。
-- `history` 同时返回 `app`（`history.json`，近 7 天）和 `cli`（`history/YYYY-MM-DD.json` 兜底记录）；`--record` 只写 CLI 那份（0600、按天覆盖）。
+- `history` 同时返回 `app`（`history.json`，近 35 天）和 `cli`（`history/YYYY-MM-DD.json` 兜底记录）；`--record` 只写 CLI 那份（0600、按天覆盖）。
 - `accounts` 读取 `config.json`，输出每家 `accounts[]`、`activeAccount`、`mode`（`accounts` / `legacy` / `none`）以及 `credentialFields`（只列字段名）。
 - `--only=id,id` 支持 `codex,deepseek,opencode,trae,workbuddy`；成本覆盖 DeepSeek / Trae / WorkBuddy / OpenCode。
 - 环境变量：`AGENT_QUOTA_CONFIG` 可指向另一份配置（App / collector / CLI 共用，`usage.json`、`last-snapshot.json`、`history.json`、`history/` 都取同级目录）；`AGENT_QUOTA_COLLECTOR` 可指定 `collector.js` 路径。默认先找仓库 `collector/collector.js`，再找已安装 App 的 `Contents/Resources/collector.js`。
@@ -333,7 +358,7 @@ Trae 与 WorkBuddy 每天自动签到，默认 09:00，失败每 30 分钟重试
 | `~/.config/agent-quota/config.json` | 配置（含 API Key / token / 多账号，600） |
 | `~/.config/agent-quota/usage.json` | 今日消费累计（DeepSeek / Trae / WorkBuddy） |
 | `~/.config/agent-quota/last-snapshot.json` | 最近一次成功快照（离线时展示，不是历史） |
-| `~/.config/agent-quota/history.json` | App 的 7 天额度/成本历史（600） |
+| `~/.config/agent-quota/history.json` | App 的 35 天额度/成本历史（600） |
 | `~/.config/agent-quota/workbuddy-at-rest` | WorkBuddy at-rest 密钥缓存（600） |
 | `~/.config/agent-quota/checkin.log` | 后台签到输出 |
 | `~/.config/agent-quota/usage.log` | 后台用量采样输出 |
@@ -343,28 +368,32 @@ Trae 与 WorkBuddy 每天自动签到，默认 09:00，失败每 30 分钟重试
 
 ## 外观
 
-设置 → 通用 → 外观，或直接点面板右上角的月亮/太阳。切换后在原窗口更新颜色，不丢未保存输入，也不需要重启；菜单栏图标会按当前菜单栏明暗自动换墨色。
+在「设置 → 菜单栏 → 界面外观」选择墨绿、液态玻璃或 Claude。每种主题都支持跟随系统、浅色和深色。额度面板右上角的月亮或太阳可切换明暗。主题和明暗分别保存，下次启动时沿用。
+
+液态玻璃采用窗后取色的磨砂背景，操作工具栏、设置侧栏和月份导航使用玻璃材质。额度数值与日历明细在实底上显示。macOS 26 及以上使用原生玻璃材质，较早版本使用系统模糊材质。开启减少透明度或增强对比度时，玻璃和磨砂背景均切换为实色。
+
+Claude 使用纸色账页。额度数值位于左栏，设置按章节排列，历史窗口在左侧展示所选日期的明细，右侧显示月历。
 
 ![设置浅色](docs/settings.png)
 ![设置深色](docs/settings-dark.png)
 
 ## 界面说明
 
-设置改成**顶部 tab + 固定 780×680 窗口**，不再用左侧导航，也不会在切栏目时改变窗口大小。深浅色自适应：深色是蓝黑底 + 石墨卡片 + 薄荷绿强调色，浅色是薄荷雾底 + 白卡片 + 深青强调色；发丝分隔、连续圆角。没有灰色大底、渐变、发光或卡片堆。
+设置窗口为 910 × 586 点，切换六个入口时保持尺寸。更改会自动保存。
 
 ## 项目结构
 
 ```
 Sources/AgentQuotaBar/
 ├── AppDelegate.swift              # 状态栏、菜单、单实例、刷新调度
-├── PopoverViewController.swift    # 面板 + 拖动排序 + 7 天趋势
+├── PopoverViewController.swift    # 面板 + 拖动排序
 ├── SettingsWindowController.swift # 设置 + 多账号切换
 ├── SetupWindowController.swift    # 每家配置向导
 ├── WebLoginWindowController.swift # 内置浏览器登录 + 自动抓凭证
 ├── MenuBarIcon.swift              # logo + 环 + 数字
 ├── ProviderRegistry / ProviderActivity / RefreshScheduler.swift
 ├── CostStore.swift                # OpenCode 本地成本
-├── HistoryStore.swift             # history.json（7 天）
+├── HistoryStore.swift             # history.json（35 天）
 ├── AccountStore.swift             # 多账号配置
 ├── ProviderLogo.swift / ProviderStyle.swift / QuotaStyle.swift / Theme.swift
 ├── NotificationService.swift / BackgroundCheckin.swift / CheckinService.swift
@@ -376,7 +405,7 @@ scripts/build_app.sh               # 构建 + 生成 Info.plist + ad-hoc 签名/
 scripts/install.sh                 # 校验后原子安装（备份/回滚）
 scripts/uninstall.sh               # 卸载 App / LaunchAgent / 本地数据
 scripts/quota                      # CLI：snapshot / cost / usage / history / accounts
-Resources/logo-*.svg               # simple-icons（CC0）
+Resources/TheSVG/                   # 品牌 SVG、固定来源与授权说明
 docs/现有方案评估.md
 docs/CLI.md                        # CLI 字段与 JSON schema 明细
 ```
@@ -391,7 +420,7 @@ docs/CLI.md                        # CLI 字段与 JSON schema 明细
 - 所有接口都是非公开接口，仅适合本机、本人账号、只读用途。
 - 多账号支持在设置页「账户…」中新增/编辑/删除/切换；同一时间只能查询一个活动账号。
 - 成本是本地估算：DeepSeek / Trae / WorkBuddy 来自采样差值，OpenCode 来自本地库，Codex 没有成本；不保证与账单一致。
-- `history.json` 只保留最近 7 天；更长的历史需要自己导出/归档。
+- `history.json` 只保留最近 35 天；更长的历史需要自己导出/归档。
 - 低额度通知依赖 App 运行；后台签到由 LaunchAgent 独立执行，不受影响。
 
 ## 分发、更新与许可
@@ -400,7 +429,7 @@ docs/CLI.md                        # CLI 字段与 JSON schema 明细
 - **更新**：没有内置自动更新（没有 Sparkle 之类的更新器）；升级就是重新拉代码后执行 `./scripts/install.sh`。
 - **签名**：本地构建使用 ad-hoc 签名（`codesign --sign -`），未做 Apple 公证（notarization）。首次打开若被 Gatekeeper 拦截，用「右键 → 打开」即可；仅建议本机自用。
 - **许可**：本仓库目前**没有 LICENSE 文件**，即未附带开源许可证；对外分发或再发布前请自行补充。
-- 品牌 logo 来自 [simple-icons](https://simple-icons.org)（CC0）；OpenAI / DeepSeek / Trae / OpenCode 商标归各自所有，仅用于本地识别。
+- 六家服务的品牌 Logo 取自 [theSVG](https://github.com/glincker/thesvg/tree/241be3c0a36db376968029f24dbfce0131ec8c8c/public/icons)，菜单栏和应用内共用同一 SVG。
 - Trae 解密算法移植自 MIT 项目 [dsh-trae-api](https://github.com/Wang-JQ77/dsh-trae-api)。
 
 ## 卸载

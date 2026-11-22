@@ -3,9 +3,11 @@ import Foundation
 enum AccountStoreError: LocalizedError {
     case accountNotFound(String)
     case invalidProvider(String)
+    case invalidFields(String)
 
     var errorDescription: String? {
         switch self {
+        case .invalidFields(let message): return message
         case .accountNotFound(let id):
             return "找不到账号 \(id)"
         case .invalidProvider(let provider):
@@ -122,6 +124,7 @@ final class AccountStore {
         let rawAccount = config.string("\(prefix).account")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !credentials.isEmpty || !rawAccount.isEmpty else { return nil }
+        if provider == "opencode" { credentials["mode"] = Self.mode(for: credentials, fallback: config.string("providers.opencode.mode")) }
         return ProviderAccount(
             id: Self.legacyAccountID,
             label: Self.legacyAccountLabel,
@@ -147,29 +150,47 @@ final class AccountStore {
     // MARK: - 写入
 
     @discardableResult
-    func setActiveAccount(_ id: String, for provider: String) throws -> ProviderAccount {
-        let all = accounts(for: provider)
-        guard let account = all.first(where: { $0.id == id }) else {
-            throw AccountStoreError.accountNotFound(id)
+    func activate(_ id: String, for provider: String) throws -> ProviderAccount {
+        return try config.withRollback {
+            guard let account = accounts(for: provider).first(where: { $0.id == id }) else {
+                throw AccountStoreError.accountNotFound(id)
+            }
+            guard !account.isLegacy else { return account }
+            try Self.validate(account.credentials, for: provider)
+            select(id, for: provider)
+            mirror(account.credentials, for: provider)
+            touchLastUsed(account, for: provider)
+            try config.save()
+            return account
         }
-        guard !account.isLegacy else { return account }
-        config.set("providers.\(provider).activeAccount", id)
-        try config.save()
-        return account
     }
 
-    /// 选中账号，并把凭据镜像到扁平字段，兼容只读扁平配置的 collector。
-    @discardableResult
-    func activate(_ id: String, for provider: String, mirrorToLegacy: Bool = true) throws -> ProviderAccount {
-        var account = try setActiveAccount(id, for: provider)
-        guard !account.isLegacy else { return account }
-        if mirrorToLegacy {
-            mirror(account.credentials, for: provider)
+    private func select(_ id: String, for provider: String) {
+        if config.string("providers.\(provider).activeAccount") != id {
+            config.set("providers.\(provider).selectionRevision", UUID().uuidString)
         }
-        touchLastUsed(account, for: provider)
-        account.lastUsedAt = Self.timestamp()
-        try config.save()
-        return account
+        config.set("providers.\(provider).activeAccount", id)
+    }
+
+    static func mode(for fields: [String: String], fallback: String) -> String {
+        let go = fields["apiKey"]?.isEmpty == false
+        let zen = fields["cookie"]?.isEmpty == false
+        if go != zen { return go ? "go" : "zen" }
+        return fields["mode"] ?? (fallback == "zen" ? "zen" : "go")
+    }
+
+    static func validate(_ fields: [String: String], for provider: String) throws {
+        switch provider {
+        case "opencode" where fields["apiKey"]?.isEmpty != false && fields["cookie"]?.isEmpty != false:
+            throw AccountStoreError.invalidFields("请填写 Go API Key 或 Zen Cookie")
+        case "deepseek" where fields["apiKey"]?.isEmpty != false:
+            throw AccountStoreError.invalidFields("请填写 API Key")
+        case "workbuddy" where fields["token"]?.isEmpty != false:
+            throw AccountStoreError.invalidFields("请填写账户 Token")
+        case "trae" where !["cn", "sg", "solo", "solo-sg"].contains(fields["edition"] ?? ""):
+            throw AccountStoreError.invalidFields("请选择有效的 Trae 版本")
+        default: break
+        }
     }
 
     @discardableResult
@@ -181,87 +202,94 @@ final class AccountStore {
         id: String? = nil,
         makeActive: Bool = true
     ) throws -> ProviderAccount {
-        guard ProviderRegistry.provider(withID: provider) != nil else {
-            throw AccountStoreError.invalidProvider(provider)
-        }
-        var stored = storedAccounts(for: provider)
-        var existingIDs = Set(stored.compactMap { $0["id"] as? String })
+        return try config.withRollback {
+            guard ProviderRegistry.provider(withID: provider) != nil else {
+                throw AccountStoreError.invalidProvider(provider)
+            }
+            var stored = storedAccounts(for: provider)
+            var existingIDs = Set(stored.compactMap { $0["id"] as? String })
 
-        // 首次创建账号数组时保留旧配置：把扁平字段落成一个 "default" 账号，避免丢失。
-        if stored.isEmpty, let legacy = legacyAccount(for: provider) {
-            stored.append(dict(from: legacy, provider: provider))
-            existingIDs.insert(legacy.id)
-        }
+            // 首次创建账号数组时保留旧配置：把扁平字段落成一个 "default" 账号，避免丢失。
+            if stored.isEmpty, let legacy = legacyAccount(for: provider) {
+                stored.append(dict(from: legacy, provider: provider))
+                existingIDs.insert(legacy.id)
+            }
 
-        let now = Self.timestamp()
-        let accountID = Self.uniqueID(
-            preferred: id ?? Self.makeID(label: label, account: account),
-            existing: existingIDs
-        )
-        let normalizedCredentials = Self.normalized(credentials, provider: provider)
-        let dict: [String: Any] = [
-            "id": accountID,
-            "label": label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? accountID : label,
-            "account": account ?? "",
-            "credentials": normalizedCredentials,
-            "createdAt": now,
-            "updatedAt": now,
-        ]
-        stored.append(dict)
-        config.set("providers.\(provider).accounts", stored)
-        if makeActive {
-            config.set("providers.\(provider).activeAccount", accountID)
+            let now = Self.timestamp()
+            let accountID = Self.uniqueID(
+                preferred: id ?? Self.makeID(label: label, account: account),
+                existing: existingIDs
+            )
+            var normalizedCredentials = Self.normalized(credentials, provider: provider)
+            try Self.validate(normalizedCredentials, for: provider)
+            if provider == "opencode" { normalizedCredentials["mode"] = Self.mode(for: normalizedCredentials, fallback: config.string("providers.opencode.mode")) }
+            let dict: [String: Any] = [
+                "id": accountID,
+                "label": label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? accountID : label,
+                "account": account ?? "",
+                "credentials": normalizedCredentials,
+                "createdAt": now,
+                "updatedAt": now,
+            ]
+            stored.append(dict)
+            config.set("providers.\(provider).accounts", stored)
+            if makeActive {
+                select(accountID, for: provider)
+            }
+            if makeActive { mirror(normalizedCredentials, for: provider) }
+            try config.save()
+            return parse(dict, provider: provider)
         }
-        try config.save()
-        if makeActive {
-            mirror(normalizedCredentials, for: provider)
-            try? config.save()
-        }
-        return parse(dict, provider: provider)
     }
 
     func updateAccount(_ account: ProviderAccount, for provider: String) throws {
-        var stored = storedAccounts(for: provider)
-        guard let index = stored.firstIndex(where: { ($0["id"] as? String) == account.id }) else {
-            throw AccountStoreError.accountNotFound(account.id)
-        }
-        var dict = stored[index]
-        // 只改已知字段，保留未来 collector 写入的未知键。
-        dict["label"] = account.label
-        dict["account"] = account.account ?? ""
-        dict["credentials"] = Self.normalized(account.credentials, provider: provider)
-        dict["updatedAt"] = Self.timestamp()
-        stored[index] = dict
-        config.set("providers.\(provider).accounts", stored)
-        try config.save()
-        if activeAccountID(for: provider) == account.id {
-            mirror(account.credentials, for: provider)
-            try? config.save()
+        try config.withRollback {
+            var stored = storedAccounts(for: provider)
+            guard let index = stored.firstIndex(where: { ($0["id"] as? String) == account.id }) else {
+                throw AccountStoreError.accountNotFound(account.id)
+            }
+            try Self.validate(account.credentials, for: provider)
+            let previous = parse(stored[index], provider: provider)
+            var dict = stored[index]
+            // 只改已知字段，保留未来 collector 写入的未知键。
+            dict["label"] = account.label
+            dict["account"] = account.account ?? ""
+            dict["credentials"] = Self.normalized(account.credentials, provider: provider)
+            dict["updatedAt"] = Self.timestamp()
+            stored[index] = dict
+            config.set("providers.\(provider).accounts", stored)
+            if activeAccountID(for: provider) == account.id {
+                if previous.credentials != account.credentials { config.set("providers.\(provider).quotaRevision", UUID().uuidString) }
+                mirror(account.credentials, for: provider)
+            }
+            try config.save()
         }
     }
 
     func removeAccount(withID id: String, for provider: String) throws {
-        var stored = storedAccounts(for: provider)
-        guard let index = stored.firstIndex(where: { ($0["id"] as? String) == id }) else {
-            throw AccountStoreError.accountNotFound(id)
-        }
-        let wasActive = activeAccountID(for: provider) == id
-        stored.remove(at: index)
-        config.set("providers.\(provider).accounts", stored)
-
-        if stored.isEmpty {
-            // 删掉最后一个账号：清掉活动账号和扁平凭据，避免旧账号被重新合成回来。
-            config.set("providers.\(provider).activeAccount", "")
-            for key in Self.credentialKeys(for: provider) {
-                config.set("providers.\(provider).\(key)", "")
+        try config.withRollback {
+            var stored = storedAccounts(for: provider)
+            guard let index = stored.firstIndex(where: { ($0["id"] as? String) == id }) else {
+                throw AccountStoreError.accountNotFound(id)
             }
-        } else if wasActive {
-            let next = parse(stored[0], provider: provider)
-            config.set("providers.\(provider).activeAccount", next.id)
-            mirror(next.credentials, for: provider)
+            let wasActive = activeAccountID(for: provider) == id
+            stored.remove(at: index)
+            config.set("providers.\(provider).accounts", stored)
+
+            if stored.isEmpty {
+                // 删掉最后一个账号：清掉活动账号和扁平凭据，避免旧账号被重新合成回来。
+                select("", for: provider)
+                for key in Self.credentialKeys(for: provider) {
+                    config.set("providers.\(provider).\(key)", "")
+                }
+            } else if wasActive {
+                let next = parse(stored[0], provider: provider)
+                select(next.id, for: provider)
+                mirror(next.credentials, for: provider)
+            }
+            try config.save()
         }
-        try config.save()
     }
 
     // MARK: - 解析 / 工具
@@ -318,6 +346,7 @@ final class AccountStore {
 
     /// 把选中账号凭据写回扁平字段（collector 兼容层）。
     private func mirror(_ credentials: [String: String], for provider: String) {
+        if provider == "opencode" { config.set("providers.opencode.mode", Self.mode(for: credentials, fallback: config.string("providers.opencode.mode"))) }
         for key in Self.credentialKeys(for: provider) {
             // edition 是 provider selector，不是账号密钥；账号没填时保留当前选择。
             if key == "edition", credentials[key] == nil { continue }

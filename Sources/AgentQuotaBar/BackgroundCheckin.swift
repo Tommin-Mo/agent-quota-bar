@@ -6,6 +6,7 @@ enum BackgroundCheckin {
     static let label = "com.agentquota.checkin"
 
     static func installIfNeeded() {
+        guard LaunchAgentInstaller.ownsBackgroundTasks else { return }
         guard let resources = Bundle.main.resourceURL else { return }
         let script = resources.appendingPathComponent("checkin-background.sh")
         guard FileManager.default.isExecutableFile(atPath: script.path) else { return }
@@ -30,6 +31,7 @@ enum BackgroundCheckin {
     }
 
     static func uninstall() {
+        guard LaunchAgentInstaller.ownsBackgroundTasks else { return }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let plistURL = home.appendingPathComponent("Library/LaunchAgents/\(label).plist")
         LaunchAgentInstaller.uninstall(label: label, plistURL: plistURL)

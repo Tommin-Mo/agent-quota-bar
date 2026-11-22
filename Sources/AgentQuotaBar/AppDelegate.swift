@@ -7,16 +7,20 @@ extension Notification.Name {
 
 // MARK: - AppDelegate
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private let popover = NSPopover()
+    private let quotaPanel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    private var panelAnchor = NSPoint.zero
+    private var panelScreen: NSScreen?
+    private var outsideGlobal: Any?
+    private var outsideLocal: Any?
+    private var pendingMenuDismissal: DispatchWorkItem?
     private let service = QuotaService()
     private lazy var checkin = CheckinService(service: service)
     private var scheduler: RefreshScheduler!
     private var checkinTimer: Timer?
     private var offlineTimer: Timer?
-    private var appearanceTimer: Timer?
-    private var lastStatusAppearanceName: String?
+    private let menuProgress = MenuBarProgressView()
     private lazy var networkMonitor = NetworkMonitor()
     private var popoverController: QuotaPopoverViewController!
     private var settingsController: SettingsWindowController?
@@ -51,7 +55,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.target = self
             button.action = #selector(statusItemClicked)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.imagePosition = .imageLeading
+            menuProgress.frame = button.bounds
+            menuProgress.autoresizingMask = [.width, .height]
+            menuProgress.setAccessibilityElement(false)
+            button.addSubview(menuProgress)
+            button.imagePosition = .imageOnly
             button.imageScaling = .scaleProportionallyDown
         }
 
@@ -59,6 +67,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popoverController.onConfigure = { [weak self] provider in
             self?.closePopover()
             self?.openSetup(provider: provider)
+        }
+        popoverController.onSelectServices = { [weak self] in
+            self?.closePopover()
+            self?.openSettings()
+            self?.settingsController?.showServicesPage()
         }
         popoverController.onOpenSettings = { [weak self] in
             self?.closePopover()
@@ -77,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.checkin.runNow(manual: true)
         }
         popoverController.onHistory = { [weak self] in
+            self?.closePopover()
             self?.openHistory()
         }
         popoverController.onToggleAppearance = { [weak self] in
@@ -84,7 +98,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         popoverController.onReorder = { [weak self] order in
             guard let self else { return }
-            self.service.config.set("providerOrder", order)
+            // 面板只提交可见行；隐藏/禁用服务必须保留在原序列附近，
+            // 否则重新启用时会被追加到末尾，用户的自定义顺序就丢了。
+            let previous = self.service.config.stringArray("providerOrder")
+            var merged = order
+            for (index, id) in previous.enumerated() where !merged.contains(id) {
+                merged.insert(id, at: min(index, merged.count))
+            }
+            for id in ProviderRegistry.ids where !merged.contains(id) {
+                merged.append(id)
+            }
+            self.service.config.set("providerOrder", merged)
             do {
                 try self.service.config.save()
             } catch {
@@ -92,13 +116,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
         }
         popoverController.onPreferredContentSizeChange = { [weak self] size in
-            guard let self, self.popover.isShown else { return }
-            self.popover.contentSize = size
+            guard let self, self.quotaPanel.isVisible else { return }
+            self.positionPanel(size)
         }
-        popover.contentViewController = popoverController
-        popover.behavior = .transient
-        popover.animates = false
-        popover.delegate = self
+        quotaPanel.contentViewController = popoverController
+        quotaPanel.isReleasedWhenClosed = false
+        quotaPanel.animationBehavior = .none
+        quotaPanel.level = .popUpMenu
+        quotaPanel.isFloatingPanel = true
+        quotaPanel.hidesOnDeactivate = false
+        quotaPanel.isOpaque = false
+        quotaPanel.backgroundColor = .clear
+        quotaPanel.hasShadow = true
+        quotaPanel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        popoverController.view.wantsLayer = true
+        popoverController.view.layer?.cornerRadius = 12
+        popoverController.view.layer?.masksToBounds = true
 
         networkMonitor.onChange = { [weak self] online in
             guard let self else { return }
@@ -132,19 +165,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         render()
         refreshCheckinUI()
         scheduler.start()
-        // 状态栏按钮刚挂上时 effectiveAppearance 还是 VibrantLight，
-        // 系统菜单栏稍后才切换成 VibrantDark；补两次重绘，避免首屏黑图标。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.render() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.render() }
-        let appearanceTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
-            guard let self, let button = self.statusItem.button else { return }
-            let name = button.effectiveAppearance.name.rawValue
-            guard name != self.lastStatusAppearanceName else { return }
-            self.lastStatusAppearanceName = name
-            self.render()
-        }
-        RunLoop.main.add(appearanceTimer, forMode: .common)
-        self.appearanceTimer = appearanceTimer
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             self?.checkin.runIfNeeded()
         }
@@ -155,6 +175,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.render()
+            self?.service.publishWidgetSnapshot()
+            self?.historyController?.refreshForExternalSnapshot()
         }
 
         // 系统睡眠期间 Timer 不会触发；唤醒后立即补一次，避免菜单栏长期停在旧值。
@@ -170,6 +192,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 name: name,
                 object: nil
             )
+        }
+        workspaceCenter.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+                                    object: nil, queue: .main) { [weak self] _ in
+            self?.refreshThemeSurfaces()
+        }
+        workspaceCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+                                    object: nil, queue: .main) { [weak self] note in
+            guard let self, self.quotaPanel.isVisible,
+                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            self.closePopover()
         }
         DistributedNotificationCenter.default.addObserver(
             forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
@@ -224,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // 历史默认是整体额度监控；具体 Agent 在窗口内选择。
             historyController = HistoryWindowController(providerID: "all")
         }
-        historyController?.currentSnapshotProvider = { [weak self] in self?.service.snapshot }
+        historyController?.currentSnapshotProvider = { [weak self] in guard let self else { return nil }; return self.service.snapshot?.excluding(Set(self.service.config.stringArray("hiddenProviders"))) }
         historyController?.refreshForExternalSnapshot()
         historyController?.showWindow(nil)
         historyController?.window?.makeKeyAndOrderFront(nil)
@@ -232,6 +265,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func refreshThemeSurfaces() {
+        for setup in setupControllers.values {
+            if let content = setup.window?.contentView { Theme.refreshViews(content) }
+        }
+        historyController?.refreshAppearance()
         popoverController?.refreshAppearance()
         settingsController?.reloadForAppearance()
         for delay in [0.05, 0.2] {
@@ -243,6 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func applyAppearance() {
+        Theme.design = DesignTheme(setting: service.config.string("designTheme"))
         switch service.config.string("appearance", default: "system") {
         case "light":
             NSApp.appearance = NSAppearance(named: .aqua)
@@ -251,7 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         default:
             NSApp.appearance = nil
         }
-        for window in NSApp.windows {
+        for window in NSApp.windows where window !== statusItem?.button?.window {
             window.appearance = NSApp.appearance
         }
     }
@@ -266,10 +304,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             running: checkin.isRunning
         )
         settingsController?.updateCheckinStatus()
-    }
-
-    private func menuBarInk() -> NSColor {
-        .white
     }
 
     private func installDebugHooks() {
@@ -333,7 +367,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         if env["AQB_TEST_NOTIFICATION"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                NotificationService.shared.sendTest()
+                NotificationService.shared.sendTest { accepted in
+                    NSLog("AQB notification test accepted=%@", accepted ? "yes" : "no")
+                }
             }
         }
 
@@ -388,9 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     provider: id,
                     value: item.value,
                     remaining: item.remaining,
-                    severity: item.severity,
-                    scale: service.effectiveMenuBarIconScale,
-                    ink: .white
+                    scale: service.effectiveMenuBarIconScale
                 )
                 icon.draw(in: NSRect(x: 10 + index * 47, y: 14, width: 28, height: 18))
             }
@@ -477,11 +511,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         let mode = service.config.string("menuBarMode", default: "auto")
         let hidden = Set(service.config.stringArray("hiddenProviders"))
-        let visibleSnapshot = service.snapshot?.excluding(hidden)
+        let disabled = Set(service.snapshot?.providers.filter { $0.status == "disabled" }.map(\.id) ?? [])
+        let visibleSnapshot = service.snapshot?.excluding(hidden.union(disabled))
         if let snapshot = visibleSnapshot {
             updateActiveProvider(snapshot: snapshot, mode: mode)
         }
 
+        let icon: MenuBarIcon
         if let snapshot = visibleSnapshot {
             let configured = service.config.string("menuBarProvider", default: "auto")
             let providerID = activeProviderID
@@ -490,46 +526,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 ?? snapshot.providers.first?.id
             if let id = providerID, let item = snapshot.menuBarItem(for: id) {
                 let scale = service.effectiveMenuBarIconScale
-                button.image = MenuBarIcon.make(
+                icon = MenuBarIcon.make(
                     provider: id,
                     value: item.value,
                     remaining: item.remaining,
-                    severity: item.severity,
-                    scale: scale,
-                    ink: menuBarInk(),
-                    fixedInk: true,
-                    appearance: button.effectiveAppearance
+                    scale: scale
                 )
-                button.attributedTitle = NSAttributedString(string: "")
-                button.imagePosition = .imageOnly
                 let name = ProviderStyles.style(for: id).shortName
                 button.toolTip = "\(name)\n\(item.tooltip)" + (service.isOffline ? "\n网络未连接，显示上次数据" : "")
             } else {
-                button.image = MenuBarIcon.make(
-                    provider: "codex",
-                    value: "—",
+                icon = MenuBarIcon.make(
+                    provider: "quota",
+                    value: "",
                     remaining: nil,
-                    severity: .neutral,
-                    scale: service.effectiveMenuBarIconScale,
-                    ink: menuBarInk()
+                    scale: service.effectiveMenuBarIconScale
                 )
-                button.attributedTitle = NSAttributedString(string: "")
                 button.toolTip = "没有可显示的 Agent"
             }
         } else {
-            button.image = MenuBarIcon.make(
-                provider: "codex",
-                value: service.isRefreshing ? "…" : "—",
+            icon = MenuBarIcon.make(
+                provider: "quota",
+                value: "",
                 remaining: nil,
-                severity: .neutral,
-                scale: service.effectiveMenuBarIconScale,
-                ink: menuBarInk()
+                scale: service.effectiveMenuBarIconScale
             )
-            button.attributedTitle = NSAttributedString(string: "")
             button.toolTip = service.isOffline
                 ? "网络未连接，等待恢复"
                 : (service.errorMessage ?? "点击打开面板")
         }
+
+        button.image = icon.foreground
+        menuProgress.progress = icon.progress
 
         popoverController.update(
             snapshot: visibleSnapshot,
@@ -538,9 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             isOffline: service.isOffline
         )
         updateOfflineRetry()
-        if popover.isShown {
-            popover.contentSize = popoverController.preferredContentSize
-        }
+
         settingsController?.updateProviderStatuses(service.snapshot)
         NotificationCenter.default.post(name: .quotaUpdated, object: service.snapshot)
         if let snapshot = service.snapshot {
@@ -571,6 +596,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 let delay = Double(env["AQB_SNAPSHOT_DELAY"] ?? "") ?? 0.8
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                     guard let view = self?.popoverController.view else { return }
+                    if let id = env["AQB_SNAPSHOT_EXPAND"], let controller = self?.popoverController {
+                        controller.expandForSnapshot(id)
+                        view.layoutSubtreeIfNeeded()
+                    }
                     self?.writeSnapshot(of: view, to: path)
                 }
             }
@@ -588,8 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let icon = MenuBarIcon.make(
                 provider: id,
                 value: item.value,
-                remaining: item.remaining,
-                severity: item.severity
+                remaining: item.remaining
             )
             icon.draw(in: NSRect(x: 10 + index * 47, y: 14, width: 28, height: 18))
         }
@@ -603,6 +631,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     /// 自动模式：谁的额度数值刚变化，就切到谁；10 秒冷却避免闪烁。
     private struct ProviderUsageSnapshot {
+        var identity = ""
         var percents: [String: Double] = [:]
         var consumed: Double?
         var balance: Double?
@@ -616,7 +645,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// 窗口重置、签到 +100、充值上涨都不算使用。
     @discardableResult
     private func detectUsage(_ provider: ProviderStatus, at timestamp: Date) -> Bool {
+        guard provider.cached != true, provider.isUsable else { return false }
+        if lastUsage[provider.id]?.identity != provider.identity { lastUsage[provider.id] = nil }
         var current = ProviderUsageSnapshot()
+        current.identity = provider.identity
         var occurrences: [String: Int] = [:]
         for metric in provider.metrics where metric.kind == "percent" {
             guard let used = metric.usedPercent else { continue }
@@ -768,12 +800,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc private func statusItemClicked() {
+        pendingMenuDismissal?.cancel()
+        pendingMenuDismissal = nil
         if NSApp.currentEvent?.type == .rightMouseUp {
             showContextMenu()
             return
         }
-        if popover.isShown {
-            popover.performClose(nil)
+        if quotaPanel.isVisible {
+            let point = NSEvent.mouseLocation
+            if panelScreen?.frame.contains(point) != true, let clicked = NSScreen.screens.first(where: { $0.frame.contains(point) }) {
+                showQuotaPanel(at: point, on: clicked)
+            } else { closePopover() }
         } else {
             // 打开面板时如果数据已经超过一个刷新周期，补一次；避免只能手动点“立即刷新”。
             if service.snapshot == nil
@@ -787,13 +824,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func showPopover() {
-        guard let button = statusItem.button, !popover.isShown else { return }
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        NSApp.activate(ignoringOtherApps: true)
+        guard !quotaPanel.isVisible else { return }
+        let pointer = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) }) ?? statusItem.button?.window?.screen else { return }
+        showQuotaPanel(at: pointer, on: screen)
+    }
+
+    func showQuotaPanel(at pointer: NSPoint, on screen: NSScreen) {
+        panelScreen = screen
+        panelAnchor = NSPoint(x: pointer.x, y: min(screen.frame.maxY - NSStatusBar.system.thickness, screen.visibleFrame.maxY) - 3)
+        popoverController.availableHeight = min(900, panelAnchor.y - screen.visibleFrame.minY - 8)
+        positionPanel(popoverController.preferredContentSize)
+        guard !quotaPanel.isVisible else { return }
+        quotaPanel.orderFrontRegardless()
+        popoverController.setPanelVisible(true)
+        let events: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        outsideGlobal = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            self?.dismissForOutsideEvent(event)
+        }
+        outsideLocal = NSEvent.addLocalMonitorForEvents(matching: [events, .keyDown]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .keyDown {
+                if event.keyCode == 53 { self.closePopover(); return nil }
+            } else if event.window !== self.quotaPanel && event.window !== self.statusItem.button?.window { self.closePopover() }
+            return event
+        }
+    }
+
+    private func dismissForOutsideEvent(_ event: NSEvent) {
+        let point = event.window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
+        if event.type == .leftMouseUp {
+            if statusItem.button?.window?.frame.contains(point) == true { return }
+            if panelScreen?.frame.contains(point) != true,
+               let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
+               point.y >= min(screen.visibleFrame.maxY, screen.frame.maxY - NSStatusBar.system.thickness) {
+                // The other display's menu-bar replica can deliver the global release
+                // before forwarding our button action. Give that action first refusal.
+                pendingMenuDismissal?.cancel()
+                let dismissal = DispatchWorkItem { [weak self] in
+                    guard let self, self.statusItem.button?.window?.frame.contains(point) != true else { return }
+                    self.closePopover()
+                }
+                pendingMenuDismissal = dismissal
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: dismissal)
+                return
+            }
+        }
+        closePopover()
+    }
+
+    private func positionPanel(_ size: NSSize) {
+        guard let frame = panelScreen?.visibleFrame else { return }
+        let x = max(frame.minX, min(panelAnchor.x - size.width / 2, frame.maxX - size.width))
+        quotaPanel.setFrame(NSRect(x: x, y: panelAnchor.y - size.height, width: size.width, height: size.height), display: true)
     }
 
     func closePopover() {
-        popover.performClose(nil)
+        pendingMenuDismissal?.cancel()
+        pendingMenuDismissal = nil
+        popoverController.setPanelVisible(false)
+        quotaPanel.orderOut(nil)
+        if let outsideGlobal { NSEvent.removeMonitor(outsideGlobal); self.outsideGlobal = nil }
+        if let outsideLocal { NSEvent.removeMonitor(outsideLocal); self.outsideLocal = nil }
     }
 
     private func showContextMenu() {
@@ -854,14 +946,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         auto.representedObject = "auto"
         auto.state = mode == "auto" ? .on : .off
         menu.addItem(auto)
-        let merged = NSMenuItem(title: "合并显示（比例最低）", action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
+        let merged = NSMenuItem(title: "显示最紧张服务", action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
         merged.target = self
         merged.representedObject = "merged"
         merged.state = mode == "merged" ? .on : .off
         menu.addItem(merged)
         menu.addItem(.separator())
 
-        for descriptor in ProviderRegistry.all {
+        for descriptor in ProviderRegistry.all where !service.config.stringArray("hiddenProviders").contains(descriptor.id) {
             let id = descriptor.id
             let item = NSMenuItem(title: descriptor.shortName, action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
             item.target = self
@@ -1000,7 +1092,7 @@ final class ClosureButton: NSButton {
         self.title = title
         self.isBordered = false
         self.font = .systemFont(ofSize: 10.5, weight: .semibold)
-        self.contentTintColor = .systemBlue
+        self.contentTintColor = Theme.accent
         self.target = self
         self.action = #selector(fire)
     }
@@ -1010,62 +1102,6 @@ final class ClosureButton: NSButton {
     }
 
     @objc private func fire() { onTap() }
-}
-
-final class AvatarView: NSView {
-    private let avatarProvider: String?
-    private let avatarSize: CGFloat
-    private weak var logoView: NSImageView?
-
-    init(letter: String, color: NSColor, size: CGFloat, provider: String? = nil) {
-        self.avatarProvider = provider
-        self.avatarSize = size
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: size).isActive = true
-        heightAnchor.constraint(equalToConstant: size).isActive = true
-        if let provider, let logo = ProviderLogo.image(for: provider, size: size * 0.92, color: .black) {
-            // 用模板图 + labelColor，让 AppKit 自己跟随明暗切换；
-            // 不再把动态色渲染进图片，避免深色切浅色后留下白色 logo。
-            logo.isTemplate = true
-            let view = NSImageView(image: logo)
-            view.imageScaling = .scaleProportionallyUpOrDown
-            view.contentTintColor = .labelColor
-            self.logoView = view
-            view.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(view)
-            NSLayoutConstraint.activate([
-                view.centerXAnchor.constraint(equalTo: centerXAnchor),
-                view.centerYAnchor.constraint(equalTo: centerYAnchor),
-            ])
-            return
-        }
-
-        let label = NSTextField(labelWithString: letter)
-        label.font = .systemFont(ofSize: size * 0.46, weight: .bold)
-        label.textColor = color
-        label.alignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 0.5),
-        ])
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        refreshInk()
-    }
-
-    func refreshInk() {
-        logoView?.contentTintColor = .labelColor
-        logoView?.needsDisplay = true
-    }
 }
 
 final class PillView: NSView {

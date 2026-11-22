@@ -50,14 +50,14 @@ final class WebLoginWindowController: NSWindowController, WKNavigationDelegate, 
         guard let window else { return }
         let container = ThemedSurfaceView(frame: NSRect(x: 0, y: 0, width: 520, height: 700))
         container.wantsLayer = true
-        container.surfaceColor = .windowBackgroundColor
+        container.surfaceColor = Theme.background
 
         let title = label(
             kind == .workbuddy ? "登录 WorkBuddy（个人版）" : "登录 OpenCode",
-            size: 13,
+            size: 18,
             weight: .semibold
         )
-        statusLabel.font = .systemFont(ofSize: 10)
+        statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.stringValue = "登录后自动关闭。"
         statusLabel.setAccessibilityLabel("登录状态")
@@ -74,7 +74,7 @@ final class WebLoginWindowController: NSWindowController, WKNavigationDelegate, 
         spinner.widthAnchor.constraint(equalToConstant: 14).isActive = true
         spinner.heightAnchor.constraint(equalToConstant: 14).isActive = true
 
-        let header = NSStackView(views: [titles, spinner])
+        let header = NSStackView(views: [ProviderMarkView(provider: kind == .workbuddy ? "workbuddy" : "opencode", size: 28), titles, NSView(), spinner])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 8
@@ -282,14 +282,14 @@ final class WebLoginWindowController: NSWindowController, WKNavigationDelegate, 
             case .success(let status):
                 if status.status == "ok" || status.status == "warn" {
                     self.statusLabel.stringValue = "✓ 已验证：\(status.headline ?? status.detail ?? "已连接")，窗口即将关闭"
-                    self.statusLabel.textColor = .systemGreen
+                    self.statusLabel.textColor = Theme.success
                     self.onCredential(credential, secondary)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
                         self.close()
                     }
                 } else {
                     self.statusLabel.stringValue = "✗ \(status.error ?? status.detail ?? "验证失败")，请确认已登录后重试"
-                    self.statusLabel.textColor = .systemRed
+                    self.statusLabel.textColor = Theme.danger
                     self.captured = false
                     self.rejectedToken = credential
                     self.pollTimer?.invalidate()
@@ -298,7 +298,7 @@ final class WebLoginWindowController: NSWindowController, WKNavigationDelegate, 
                 }
             case .failure(let error):
                 self.statusLabel.stringValue = "✗ \(error.localizedDescription)"
-                self.statusLabel.textColor = .systemRed
+                self.statusLabel.textColor = Theme.danger
             }
         }
     }

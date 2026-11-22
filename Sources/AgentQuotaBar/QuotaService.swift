@@ -19,7 +19,15 @@ enum QuotaError: LocalizedError {
 
 /// 负责调度 Node collector 并把结果交给 UI。
 final class QuotaService {
-    private(set) var snapshot: QuotaSnapshot?
+    private var latestSnapshot: QuotaSnapshot?
+    var snapshot: QuotaSnapshot? { latestSnapshot.map(currentAccounts) }
+
+    private func currentAccounts(_ source: QuotaSnapshot) -> QuotaSnapshot {
+        source.currentAccounts(in: config.dictionary("providers") ?? [:])
+    }
+    private var readingDoubao = false
+    /// 外层 optional 表示“是否还有一次待处理请求”，内层保留原始 only。
+    private var pendingOnly: String??
     private(set) var errorMessage: String?
     private(set) var isRefreshing = false
     private(set) var isOffline = false
@@ -28,14 +36,23 @@ final class QuotaService {
     var onChange: (() -> Void)?
     private let cacheURL: URL
 
-    init() {
+    private let publishWidgets: Bool
+
+    init(publishWidgets: Bool = true) {
+        self.publishWidgets = publishWidgets
         cacheURL = config.url.deletingLastPathComponent().appendingPathComponent("last-snapshot.json")
         ensureMenuBarScaleModel()
         if let data = try? Data(contentsOf: cacheURL),
            let cached = try? JSONDecoder().decode(QuotaSnapshot.self, from: data),
            !cached.providers.isEmpty {
-            snapshot = cached
-            publishWidgetSnapshot(data)
+            latestSnapshot = QuotaSnapshot(schema: cached.schema, updatedAt: cached.updatedAt, sampledAt: cached.sampledAt, providers: cached.providers.map { provider in
+                var item = provider
+                item.cached = true
+                item.sampledAt = item.sampledAt ?? cached.sampledAt ?? cached.updatedAt
+                return item
+            })
+            ProviderRegistry.update(from: cached.providers)
+            publishWidgetSnapshot()
         }
     }
 
@@ -65,23 +82,61 @@ final class QuotaService {
     /// `only` 可以是逗号分隔的 provider 列表（如 "deepseek" 或 "deepseek,trae"）。
     /// 定向刷新只合并对应 provider，不覆盖其他数据。
     func refresh(only: String?) {
-        guard !isRefreshing else { return }
+        guard !isRefreshing else { pendingOnly = .some(only); onChange?(); publishWidgetSnapshot(); return }
+        let configPath = config.url.path
+        let requested = Self.providerIDs(from: only)
+        // First-time system OCR model preparation can take much longer than a network poll.
+        let separateReader = ProcessInfo.processInfo.environment["AGENT_QUOTA_COLLECTOR"] == nil
+        if separateReader && (requested?.contains("doubao") ?? true) {
+            refreshDoubao(configPath: configPath)
+            if requested?.allSatisfy({ $0 == "doubao" }) == true { return }
+        }
+        let onlyIDs = separateReader ? requested?.filter { $0 != "doubao" } : requested
         isRefreshing = true
         onChange?()
 
-        let configPath = config.url.path
-        let onlyIDs = Self.providerIDs(from: only)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let result = Result { try Self.runCollector(configPath: configPath, only: onlyIDs) }
+            let result = Result { try Self.runCollector(configPath: configPath, only: onlyIDs, skipDoubao: separateReader) }
             DispatchQueue.main.async {
                 self.isRefreshing = false
                 switch result {
                 case .success(let incoming):
-                    self.apply(incoming, only: onlyIDs)
+                    self.apply(incoming, only: onlyIDs, preserveDoubao: separateReader)
                 case .failure(let error):
+                    if let old = self.snapshot {
+                        let rows = old.providers.map { source -> ProviderStatus in
+                            guard (!separateReader || source.id != "doubao"), onlyIDs?.contains(source.id) ?? true else { return source }
+                            var item = source
+                            item.cached = true
+                            item.sampledAt = item.sampledAt ?? old.sampledAt ?? old.updatedAt
+                            return item
+                        }
+                        let cached = QuotaSnapshot(schema: old.schema, updatedAt: old.updatedAt, sampledAt: old.sampledAt, providers: rows)
+                        self.latestSnapshot = cached
+                        self.saveCache(cached)
+                    }
                     self.errorMessage = error.localizedDescription
                 }
+                self.onChange?()
+                if let pending = self.pendingOnly {
+                    self.pendingOnly = nil
+                    self.refresh(only: pending)
+                }
+            }
+        }
+    }
+
+    private func refreshDoubao(configPath: String) {
+        guard !readingDoubao else { return }
+        readingDoubao = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = try? Self.runCollector(configPath: configPath, only: ["doubao"])
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.readingDoubao = false
+                guard let result else { return }
+                self.apply(result, only: ["doubao"])
                 self.onChange?()
             }
         }
@@ -91,7 +146,9 @@ final class QuotaService {
     ///
     /// 离线（`isOffline`）只在“所有启用的 provider 都因网络错误失败”时成立；
     /// 部分失败时保留成功 provider 的新数据，并给失败的 provider 留 error 行。
-    private func apply(_ incoming: QuotaSnapshot, only: [String]? = nil) {
+    func apply(_ source: QuotaSnapshot, only: [String]? = nil, preserveDoubao: Bool = false) {
+        let incoming = currentAccounts(source)
+        guard !incoming.providers.isEmpty || source.providers.isEmpty else { return }
         // 未配置的 provider 不参与“是否整体离线”的判断；否则新装用户只配了
         // DeepSeek 时，离线会被 4 个 unconfigured 行稀释成“在线”。
         let incomingRelevant = incoming.providers.filter {
@@ -100,66 +157,33 @@ final class QuotaService {
         let allIncomingNetworkFailed = !incomingRelevant.isEmpty
             && incomingRelevant.allSatisfy { $0.status == "error" && Self.isNetworkProvider($0) }
 
-        if only != nil {
-            // 定向刷新只影响目标行；若目标本身网络失败，保留上一份快照与离线状态，
-            // 不能用目标错误行伪装成“刚刚更新成功”。
-            if allIncomingNetworkFailed {
-                if snapshot == nil {
-                    isOffline = true
-                    errorMessage = nil
-                }
-                return
+        let rejectedIDs = Set(source.providers.map(\.id)).subtracting(incoming.providers.map(\.id))
+        var providers = snapshot?.providers.filter { only != nil || (preserveDoubao && $0.id == "doubao") || rejectedIDs.contains($0.id) } ?? []
+        let previous = snapshot
+        for var provider in incoming.providers {
+            if Self.isNetworkProvider(provider) || (provider.status == "error" && ProviderRegistry.usesLocalQuota(provider.id)), var old = previous?.provider(withID: provider.id),
+               old.isUsable, old.localAccountID == provider.localAccountID {
+                old.cached = true
+                old.sampledAt = old.sampledAt ?? previous?.sampledAt ?? previous?.updatedAt
+                provider = old
+            } else {
+                provider.sampledAt = provider.sampledAt ?? incoming.sampledAt ?? incoming.updatedAt
             }
-            isOffline = false
-            errorMessage = nil
-            var providers = incoming.providers
-            if let old = snapshot {
-                // 定向刷新：替换目标 provider，其余保持原样（不会因子集响应丢掉其他家数据）。
-                var mergedProviders = old.providers
-                for provider in incoming.providers {
-                    if let index = mergedProviders.firstIndex(where: { $0.id == provider.id }) {
-                        mergedProviders[index] = provider
-                    } else {
-                        mergedProviders.append(provider)
-                    }
-                }
-                providers = mergedProviders
-            }
-
-            let merged = QuotaSnapshot(
-                schema: incoming.schema,
-                updatedAt: incoming.updatedAt,
-                sampledAt: incoming.sampledAt,
-                providers: providers
-            )
-            snapshot = merged
-            // 定向采集成功说明网络可用，不再处于“全部 provider 网络失败”的离线状态。
-            isOffline = false
-            errorMessage = nil
-            UsageTracker.shared.record(snapshot: merged, only: Set(only ?? []))
-            HistoryStore.shared.record(snapshot: merged, only: only.map(Set.init))
-            saveCache(merged)
-            return
+            if let index = providers.firstIndex(where: { $0.id == provider.id }) {
+                providers[index] = provider
+            } else { providers.append(provider) }
         }
-
-        if allIncomingNetworkFailed {
-            // 整体离线：保留上次数据、连时间都不改。
-            isOffline = true
-            errorMessage = nil
-            return
+        let failed = incoming.providers.filter(Self.isNetworkProvider)
+        if only != ["doubao"] {
+            isOffline = allIncomingNetworkFailed && providers.filter(\.isUsable).allSatisfy { $0.cached == true }
+            errorMessage = failed.isEmpty || isOffline ? nil : failed.map(\.name).joined(separator: "、") + " 刷新失败"
         }
-
-        isOffline = false
-        errorMessage = nil
-        let merged = QuotaSnapshot(
-            schema: incoming.schema,
-            updatedAt: incoming.updatedAt,
-            sampledAt: incoming.sampledAt,
-            providers: incoming.providers
-        )
-        snapshot = merged
-        UsageTracker.shared.record(snapshot: merged)
-        HistoryStore.shared.record(snapshot: merged)
+        let merged = QuotaSnapshot(schema: incoming.schema, updatedAt: incoming.updatedAt,
+                                   sampledAt: incoming.sampledAt, providers: providers)
+        ProviderRegistry.update(from: providers)
+        latestSnapshot = merged
+        UsageTracker.shared.record(snapshot: incoming, only: only.map(Set.init))
+        HistoryStore.shared.record(snapshot: incoming, only: only.map(Set.init), preferredWindows: config.dictionary("panelWindow") as? [String: String] ?? [:])
         saveCache(merged)
     }
 
@@ -167,15 +191,21 @@ final class QuotaService {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         try? data.write(to: cacheURL, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
-        publishWidgetSnapshot(data)
+        publishWidgetSnapshot()
     }
 
     /// WidgetKit extension 是 sandboxed 的，只共享 App Group 容器里的快照。
-    private func publishWidgetSnapshot(_ data: Data) {
+    func publishWidgetSnapshot() {
+        guard publishWidgets, LaunchAgentInstaller.ownsBackgroundTasks, let snapshot else { return }
+        let visible = snapshot.excluding(Set(config.stringArray("hiddenProviders")))
+        let rows = visible.providers.filter { $0.status != "disabled" }.map { p in
+            ["id": p.id, "name": p.name, "value": p.riskDescription, "sampledAt": p.sampledAt ?? "", "cached": p.cached == true] as [String: Any]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["providers": rows]) else { return }
         let home = FileManager.default.homeDirectoryForCurrentUser
         let directory = home.appendingPathComponent("Library/Application Support/AgentQuotaBar", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let destination = directory.appendingPathComponent("last-snapshot.json")
+        let destination = directory.appendingPathComponent("widget-values.json")
         try? data.write(to: destination, options: .atomic)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
     }
@@ -204,14 +234,14 @@ final class QuotaService {
     }
 
     /// 单独验证某一家（配置窗口里用）。
-    func verify(provider: String, completion: @escaping (Result<ProviderStatus, Error>) -> Void) {
+    func verify(provider: String, candidate: [String: Any]? = nil, completion: @escaping (Result<ProviderStatus, Error>) -> Void) {
         let configPath = config.url.path
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try Self.runCollector(configPath: configPath, only: [provider]) }
+            let result = Result { try Self.runCollector(configPath: configPath, only: [provider], candidate: candidate) }
             DispatchQueue.main.async {
                 switch result {
                 case .success(let snapshot):
-                    if let status = snapshot.providers.first {
+                    if let status = snapshot.provider(withID: provider) {
                         completion(.success(status))
                     } else {
                         completion(.failure(QuotaError.failed("没有返回 \(provider) 的结果")))
@@ -239,12 +269,20 @@ final class QuotaService {
         try runCollector(configPath: configPath, only: only)
     }
 
-    private static func runCollector(configPath: String, only: [String]? = nil) throws -> QuotaSnapshot {
+    private static func runCollector(configPath: String, only: [String]? = nil, candidate: [String: Any]? = nil, skipDoubao: Bool = false) throws -> QuotaSnapshot {
         let process = Process()
         let script = try findCollectorScript()
         var arguments = [script]
+        if skipDoubao { arguments.append("--skip-doubao") }
         if let only, !only.isEmpty {
             arguments.append("--only=\(only.joined(separator: ","))")
+        }
+
+        let input = Pipe()
+        let candidateData = try candidate.map { try JSONSerialization.data(withJSONObject: $0) }
+        if candidateData != nil {
+            arguments.append("--verify-stdin")
+            process.standardInput = input
         }
 
         let node = try findNode()
@@ -258,43 +296,38 @@ final class QuotaService {
         process.environment = environment
 
         let outPipe = Pipe()
-        let errPipe = Pipe()
         process.standardOutput = outPipe
-        process.standardError = errPipe
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
         } catch {
-            cachedNodePath = nil
+            nodePathLock.withLock { cachedNodePath = nil }
             throw QuotaError.failed("无法启动 collector：\(error.localizedDescription)")
         }
 
+        if let candidateData {
+            DispatchQueue.global(qos: .utility).async {
+                try? input.fileHandleForWriting.write(contentsOf: candidateData)
+                try? input.fileHandleForWriting.close()
+            }
+        }
         let watchdog = DispatchWorkItem {
             if process.isRunning { process.terminate() }
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 100, execute: watchdog)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + (only == ["doubao"] ? 160 : 100), execute: watchdog)
 
         let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         watchdog.cancel()
 
-        log("collector exit=\(process.terminationStatus) stdout=\(outData.count)B stderr=\(errData.count)B script=\(process.arguments?.first ?? "?") node=\(process.executableURL?.path ?? "?")")
-        if let errText = String(data: errData, encoding: .utf8), !errText.isEmpty {
-            log("collector stderr: \(errText.prefix(500))")
-        }
-        if let outText = String(data: outData, encoding: .utf8) {
-            log("collector stdout: \(outText.prefix(200))")
-        }
-
+        log("collector exit=\(process.terminationStatus) bytes=\(outData.count)")
         do {
             return try JSONDecoder().decode(QuotaSnapshot.self, from: outData)
         } catch {
-            log("decode failed: \(error)")
+            log("collector JSON decode failed")
         }
-        let stderr = String(data: errData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        throw QuotaError.failed(stderr.isEmpty ? "collector 没有返回可解析的数据" : stderr)
+        throw QuotaError.failed("采集结果无法读取（退出码 \(process.terminationStatus)）")
     }
 
     private static func runCheckinProcess(configPath: String) throws -> CheckinReport {
@@ -312,9 +345,8 @@ final class QuotaService {
         process.environment = environment
 
         let outPipe = Pipe()
-        let errPipe = Pipe()
         process.standardOutput = outPipe
-        process.standardError = errPipe
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
@@ -328,21 +360,14 @@ final class QuotaService {
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 60, execute: watchdog)
 
         let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         watchdog.cancel()
 
-        log("checkin exit=\(process.terminationStatus) stdout=\(outData.count)B stderr=\(errData.count)B")
+        log("checkin exit=\(process.terminationStatus) bytes=\(outData.count)")
         do {
             return try JSONDecoder().decode(CheckinReport.self, from: outData)
         } catch {
-            let stderr = String(data: errData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let firstLine = stderr
-                .split(separator: "\n")
-                .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-                .map(String.init) ?? ""
-            throw QuotaError.failed(firstLine.isEmpty ? "签到没有返回可解析的数据" : String(firstLine.prefix(200)))
+            throw QuotaError.failed("签到结果无法读取（退出码 \(process.terminationStatus)）")
         }
     }
 
@@ -358,13 +383,15 @@ final class QuotaService {
     /// 依次查找 Homebrew / 系统 / nvm / volta / asdf / fnm / 本地目录里的 node。
     /// 找不到时抛 `nodeMissing`，不再回退到 `/usr/bin/env node` 让 stderr 变成看不懂的原始错误。
     private static func findNode() throws -> String {
-        if let cached = cachedNodePath { return cached }
-        let executable = locateNode()
-        guard let executable else { throw QuotaError.nodeMissing }
-        cachedNodePath = executable
-        return executable
+        try nodePathLock.withLock {
+            if let cached = cachedNodePath { return cached }
+            guard let executable = locateNode() else { throw QuotaError.nodeMissing }
+            cachedNodePath = executable
+            return executable
+        }
     }
 
+    private static let nodePathLock = NSLock()
     private static var cachedNodePath: String?
 
     private static func locateNode() -> String? {

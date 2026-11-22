@@ -4,22 +4,28 @@ import AppKit
 enum QuotaStyle {
     static var warningPercent: Double = 45
     static var dangerPercent: Double = 20
-    static var healthyColor: NSColor = Theme.success
-    static var warningColor: NSColor = Theme.warning
-    static var dangerColor: NSColor = Theme.danger
+    static var healthyColor: NSColor = Theme.quotaHealthy
+    static var warningColor: NSColor = Theme.quotaWarning
+    static var dangerColor: NSColor = Theme.quotaDanger
+    static private(set) var hasCustomColors = false
     static var creditThresholds: [String: Double] = [:]
 
+    static func percent(_ value: Double) -> Double { (value * 10).rounded() / 10 }
+
     static func apply(_ config: ConfigStore) {
-        warningPercent = min(99, max(1, config.double("style.warningPercent", default: 45)))
-        dangerPercent = min(warningPercent - 1, max(1, config.double("style.dangerPercent", default: 20)))
-        let healthyHex = config.string("style.healthyColor").uppercased()
-        if healthyHex.isEmpty || healthyHex == "#0B6B5E" || healthyHex == "#2DD4BF" {
-            healthyColor = Theme.success
-        } else {
-            healthyColor = color(hex: healthyHex, fallback: Theme.success)
+        warningPercent = percent(min(99, max(2, config.double("style.warningPercent", default: 45))))
+        dangerPercent = percent(min(warningPercent - 1, max(1, config.double("style.dangerPercent", default: 20))))
+        hasCustomColors = false
+        func configuredColor(_ key: String, legacyDefaults: [String], role: NSColor) -> NSColor {
+            let hex = config.string("style." + key).uppercased()
+            let explicit = config.bool("style.customColors." + key, default: false)
+            guard !hex.isEmpty, explicit || !legacyDefaults.contains(hex) else { return role }
+            hasCustomColors = true
+            return color(hex: hex, fallback: role)
         }
-        warningColor = color(hex: config.string("style.warningColor"), fallback: Theme.warning)
-        dangerColor = color(hex: config.string("style.dangerColor"), fallback: Theme.danger)
+        healthyColor = configuredColor("healthyColor", legacyDefaults: ["#14B8A6", "#0B6B5E", "#2DD4BF"], role: Theme.quotaHealthy)
+        warningColor = configuredColor("warningColor", legacyDefaults: ["#F59E0B"], role: Theme.quotaWarning)
+        dangerColor = configuredColor("dangerColor", legacyDefaults: ["#DC2626"], role: Theme.quotaDanger)
         var thresholds: [String: Double] = [:]
         let fallback: [String: Double] = ["trae": 200, "workbuddy": 500, "deepseek": 5]
         for id in ["trae", "workbuddy", "deepseek"] {
@@ -29,20 +35,30 @@ enum QuotaStyle {
         creditThresholds = thresholds
     }
 
+    // The original DeepSeek setting was denominated in CNY. A foreign balance
+    // still alerts at exhaustion without comparing two different currencies.
+    static func threshold(for provider: ProviderStatus) -> Double? {
+        if provider.id == "deepseek", provider.creditMetric?.currency?.uppercased() != "CNY" { return nil }
+        return creditThresholds[provider.id]
+    }
+
     static func creditColor(for provider: ProviderStatus) -> NSColor? {
-        guard let threshold = creditThresholds[provider.id],
-              let value = remainingNumber(provider) else { return nil }
+        guard let value = remainingNumber(provider) else { return nil }
+        if value <= 0 { return dangerColor }
+        guard let threshold = threshold(for: provider) else { return nil }
         if value <= threshold * 0.5 { return dangerColor }
         if value <= threshold { return warningColor }
         return nil
     }
 
     static func remainingNumber(_ provider: ProviderStatus) -> Double? {
-        let metric = provider.metrics.first(where: { $0.kind == "credit" })
-            ?? provider.metrics.first(where: { $0.kind == "text" })
-        guard let text = metric?.headlineValue else { return nil }
-        let digits = text.filter { $0.isNumber || $0 == "." }
-        return Double(digits)
+        if let balance = provider.balance { return balance }
+        if case .number(let number) = provider.creditMetric?.value { return number }
+        guard let text = provider.creditMetric?.headlineValue else { return nil }
+        let number = text.replacingOccurrences(of: "−", with: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "$¥€£ "))
+            .replacingOccurrences(of: ",", with: "")
+        return Double(number)
     }
 
     static func color(hex: String?, fallback: NSColor) -> NSColor {
@@ -55,7 +71,7 @@ enum QuotaStyle {
     }
 
     static func hex(_ color: NSColor) -> String {
-        guard let rgb = color.usingColorSpace(.sRGB) else { return "#16A34A" }
+        guard let rgb = color.usingColorSpace(.sRGB) else { return "#0B6B5E" }
         return String(
             format: "#%02X%02X%02X",
             Int(round(rgb.redComponent * 255)),

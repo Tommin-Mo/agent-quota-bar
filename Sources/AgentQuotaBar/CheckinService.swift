@@ -28,6 +28,16 @@ final class CheckinService {
         return !config.string("checkin.lastSummary").contains("失败")
     }
 
+    static func result(for id: String, in config: ConfigStore) -> String {
+        guard config.string("checkin.resultDate") == todayKey else { return "待签到" }
+        switch config.string("checkin.results.\(id)") {
+        case "ok", "already": return "已签到"
+        case "inactive": return "未开放"
+        case "failed": return "签到失败"
+        default: return "待签到"
+        }
+    }
+
     var isRunning: Bool { running }
 
     var statusText: String {
@@ -37,7 +47,7 @@ final class CheckinService {
             ? "签到失败，请重试"
             : rawSummary
         if hasCheckedInToday {
-            return summary.isEmpty ? "今日已签到" : summary
+            return summary.isEmpty ? "未返回签到结果" : summary
         }
         if summary.contains("失败") {
             return summary
@@ -46,6 +56,7 @@ final class CheckinService {
     }
 
     var detailText: String {
+        guard isAutoEnabled else { return "自动签到已关闭" }
         if hasCheckedInToday { return "明天自动继续" }
         return "每日 \(String(format: "%02d:00", scheduledHour)) 自动签到"
     }
@@ -56,6 +67,7 @@ final class CheckinService {
     }
 
     func runIfNeeded() {
+        guard LaunchAgentInstaller.ownsBackgroundTasks else { return }
         config.reload()
         guard isAutoEnabled, !running, !hasCheckedInToday else { return }
         let hour = Calendar.current.component(.hour, from: Date())
@@ -98,11 +110,14 @@ final class CheckinService {
                    let streak = workbuddy.streak {
                     self.config.set("checkin.workbuddyStreak", streak)
                 }
-                let incomplete = report.results.contains { $0.status == "failed" }
+                let results = Dictionary(report.results.map { ($0.provider, $0.status) }, uniquingKeysWith: { _, new in new })
+                self.config.set("checkin.results", results)
+                self.config.set("checkin.resultDate", Self.todayKey)
+                let incomplete = report.results.isEmpty || report.results.contains { !["ok", "already", "inactive"].contains($0.status) }
                 if !incomplete {
                     self.config.set("checkin.lastDate", Self.todayKey)
                 }
-                self.config.set("checkin.lastSummary", summary.isEmpty ? "今日已签到" : summary)
+                self.config.set("checkin.lastSummary", summary.isEmpty ? "未返回签到结果" : summary)
                 try? self.config.save()
                 self.onUpdate?()
                 if !incomplete || manual {
