@@ -333,7 +333,7 @@ final class QuotaService {
     private static func runCheckinProcess(configPath: String) throws -> CheckinReport {
         let process = Process()
         let script = try findCollectorScript()
-        let arguments = [script, "--checkin", "--only=trae,workbuddy"]
+        let arguments = [script, "--checkin", "--only=trae,workbuddy,doubao"]
 
         let node = try findNode()
         process.executableURL = URL(fileURLWithPath: node)

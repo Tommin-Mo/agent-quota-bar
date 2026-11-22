@@ -149,8 +149,8 @@ final class QuotaPopoverViewController: NSViewController {
 
         checkinButton.target = self
         checkinButton.action = #selector(checkinTapped)
-        checkinButton.toolTip = "一键签到 Trae + WorkBuddy"
-        checkinButton.setIconAccessibilityLabel("一键签到 Trae 和 WorkBuddy")
+        checkinButton.toolTip = "一键签到 Trae / WorkBuddy / 豆包"
+        checkinButton.setIconAccessibilityLabel("一键签到 Trae、WorkBuddy 和豆包")
 
         refreshButton.target = self
         refreshButton.action = #selector(refreshTapped)
@@ -927,7 +927,7 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
         if let plan = provider.displayPlan {
             nameRow.addArrangedSubview(label(plan, size: 10, color: Theme.tertiary))
         }
-        if provider.id == "trae" || provider.id == "workbuddy" {
+        if provider.id == "trae" || provider.id == "workbuddy" || provider.id == "doubao" {
             if checkinDone {
                 let badge = CheckinBadgeView()
                 badge.toolTip = "今日已签到"

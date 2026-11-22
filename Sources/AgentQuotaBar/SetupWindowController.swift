@@ -33,6 +33,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         "workbuddy": "https://www.workbuddy.cn/login/",
         "codex": "https://chatgpt.com/",
         "trae": "https://www.trae.cn/",
+        "doubao": "https://www.doubao.com/",
     ]
 
     init(provider: String, service: QuotaService, onSaved: @escaping () -> Void) {
@@ -131,6 +132,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         case "opencode": return "Go 订阅用量，或 Zen 预付余额"
         case "codex": return "自动读取本机 Codex 登录态"
         case "trae": return "自动读取并解密本机 Trae 登录态"
+        case "doubao": return "Cookie 登录态 · 每日签到 / 累计额度"
         default: return ""
         }
     }
@@ -232,6 +234,11 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
                                       placeholder: "留空自动识别", secure: false)
             let steps = wrappingLabel(workbuddyManualSteps(), size: 10.5, color: Theme.tertiary, width: 450)
             return card([tokenField, uidField, steps])
+        case "doubao":
+            let cookieField = fieldGroup(title: "豆包 Cookie", key: "providers.doubao.cookie",
+                                         placeholder: "sessionid=...; sessionid_ss=...", secure: true)
+            let steps = wrappingLabel(doubaoManualSteps(), size: 10.5, color: Theme.tertiary, width: 450)
+            return card([cookieField, steps])
         default:
             break
         }
@@ -556,6 +563,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         case "deepseek": return "打开 API Keys 页面"
         case "workbuddy": return "打开 WorkBuddy"
         case "opencode": return startZen ? "登录并自动获取" : "打开 opencode.ai"
+        case "doubao": return "打开豆包网页"
         default: return "打开页面"
         }
     }
@@ -576,6 +584,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private func workbuddyManualSteps() -> String {
         """
         在 WorkBuddy 中复制 access token 后粘贴；网页版可在 F12 → 网络（Network）→ 请求头里找到 Authorization。
+        """
+    }
+
+    private func doubaoManualSteps() -> String {
+        """
+        1. 在豆包网页版或客户端登录个人账号。
+        2. 用浏览器开发者工具 → Application → Cookies → doubao.com，复制 sessionid 和 sessionid_ss，拼成 `sessionid=...; sessionid_ss=...`。
+        3. 粘贴后保存并验证；签到接口只支持个人账号，工作/企业账号可能没有每日签到活动。
         """
     }
 
@@ -656,6 +672,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             return workbuddyManualSteps()
         case "opencode":
             return "Go 订阅：在 opencode.ai 创建 API Key 填入。\nZen 余额：登录 opencode.ai 后点「登录并自动获取」。"
+        case "doubao":
+            return doubaoManualSteps()
         case "codex":
             return "自动读取 ~/.codex/auth.json；过期后打开 ChatGPT 重登。"
         case "trae":
@@ -689,6 +707,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         switch providerID {
         case "deepseek": key = "providers.deepseek.apiKey"
         case "workbuddy": key = "providers.workbuddy.token"
+        case "doubao": key = "providers.doubao.cookie"
         case "opencode":
             key = (segmented?.selectedSegment ?? 0) == 0
                 ? "providers.opencode.apiKey"

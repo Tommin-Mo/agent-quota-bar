@@ -902,7 +902,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !checkin.hasCheckedInToday {
             let checkinItem = NSMenuItem(
-                title: "一键签到 Trae + WorkBuddy",
+                title: "一键签到 Trae / WorkBuddy / 豆包",
                 action: #selector(checkinNowMenu),
                 keyEquivalent: ""
             )

@@ -56,6 +56,7 @@ final class ConfigStore {
             ],
             "trae": ["enabled": true, "edition": "cn"],
             "workbuddy": ["enabled": true, "token": "", "uid": "", "autoCookie": false],
+            "doubao": ["enabled": true, "cookie": ""],
         ],
     ]
 

@@ -28,7 +28,7 @@ macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek / �
 
 - 每个百分比窗口都有进度条（包括只有一条额度的 Codex）；余额/积分行不画进度条。
 - 重置时间：24 小时内精确到分钟（`3 小时 50 分钟后重置`），超过 24 小时只显示到小时（`3 天 5 小时后重置`），避免过长。
-- Trae / WorkBuddy 的签到状态直接放在各自行里：已签显示「✓ 今日已签」，未签显示「签到」入口。
+- Trae / WorkBuddy / 豆包的签到状态直接放在各自行里：已签显示「✓ 今日已签」，未签显示「签到」入口。
 - 百分比服务按窗口显示 `5 小时消耗 1%`、`本周消耗 9%`、`本月消耗 70%`，不把不同窗口相加。
 - Trae / WorkBuddy 显示累计消费基线差：`今日 -100`；DeepSeek 按余额下降累计 `今日 -¥0.42`，没有变化就隐藏，不显示 `—` 或 `≈`。
 - 主数值和进度条统一使用青色；低于警戒/危险阈值才变橙/红，签到成功也是同一青色，避免多种绿。
@@ -43,10 +43,27 @@ macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek / �
 | OpenCode | Zen 余额（$）或 Go 的 5h/周/月 | Console Cookie（可 opt-in 从 Chrome 导入），或 Go API Key | 二选一 |
 | Trae | 剩余积分 + 已用 / 总量 | 本机登录态 → `/trae/api/v2/pay/ide_user_ent_usage` | 否 |
 | WorkBuddy | 剩余积分 + 连续签到天数 | 本机 WorkBuddy 安全存储自动解封 → 官方 billing 接口 | 否 |
-| 豆包 | 可用额度 | 豆包 Mac 客户端侧栏，本机文字识别 | 系统屏幕录制权限 |
+| 豆包 | 累计额度 + 每日签到 | 豆包 Cookie（推荐）或客户端侧栏文字识别 | Cookie；OCR 兜底需屏幕录制权限 |
 | 本地 Agent | 周期额度、积分或余额 | Agent 导出的 JSON 文件 | 在接入目录放入数据源 |
 
-豆包需要已登录、窗口打开并显示「可用额度」。设置 → 服务与账户 → 豆包 → 读取权限可打开 macOS 授权页。识别在本机完成，图像不落盘。暂时读不到时，已有数值保留最后读取时间。
+豆包的「天天领额度」支持个人账号每日签到。设置 → 服务与账户 → 豆包 → 配置，粘贴 `doubao.com` 的 Cookie 后即可查询累计额度并自动签到；Cookie 保存在本机 0600 配置中，不写日志。工作/企业账号可能没有签到活动，接口会明确返回「没有可领的签到活动」。未配置 Cookie 时仍可用客户端侧栏 OCR 读取「可用额度」作为兜底，识别在本机完成，图像不落盘。
+
+### 豆包 Cookie
+
+在 `config.json` 中配置：
+
+```json
+{
+  "providers": {
+    "doubao": {
+      "enabled": true,
+      "cookie": "sessionid=...; sessionid_ss=..."
+    }
+  }
+}
+```
+
+也可以从设置 → 服务与账户 → 豆包 → 配置粘贴 Cookie。Cookie 只用于豆包额度/签到接口，按 0600 保存，不打印到日志。
 
 ### 接入其他 Agent
 
@@ -332,7 +349,7 @@ ln -s "$PWD/scripts/agent-quota.swiftbar.js" \
 
 ## 每日签到
 
-Trae 与 WorkBuddy 每天自动签到，默认 09:00，失败每 30 分钟重试。面板右上角有一个**一键签到**按钮，同时签 Trae 和 WorkBuddy；两个都签完后按钮自动隐藏。菜单栏右键的「一键签到 Trae + WorkBuddy」也会在完成后隐藏。
+Trae、WorkBuddy 与配置了 Cookie 的豆包每天自动签到，默认 09:00，失败每 30 分钟重试。面板右上角有一个**一键签到**按钮，同时签 Trae、WorkBuddy 和豆包；完成后按钮自动隐藏。菜单栏右键的「一键签到 Trae / WorkBuddy / 豆包」也会在完成后隐藏。
 
 - Trae：`/trae/api/v2/ug/checkin_credits/status` + `/claim`；`x-device-id` 从本机 `storage.json` 的 `iCubeAuthInfo://icube-dc:<deviceId>` 读取，不能用自造设备号（否则返回 9074）
 - WorkBuddy：`/v2/billing/meter/checkin-activity-status` + `/daily-checkin`
@@ -342,7 +359,7 @@ Trae 与 WorkBuddy 每天自动签到，默认 09:00，失败每 30 分钟重试
 
 | Label | 触发方式 | 作用 | 日志 |
 | --- | --- | --- | --- |
-| `com.agentquota.checkin` | 每小时整点检查，到设定时间且当天未签才真正请求 | 后台签 Trae / WorkBuddy | `~/.config/agent-quota/checkin.log` |
+| `com.agentquota.checkin` | 每小时整点检查，到设定时间且当天未签才真正请求 | 后台签 Trae / WorkBuddy / 豆包（配置 Cookie 时） | `~/.config/agent-quota/checkin.log` |
 | `com.agentquota.usage` | 每 300 秒 + 登录时（App 运行时跳过；App 内 DeepSeek 每 60 秒、Trae/WorkBuddy 跟随整包刷新） | 采样 DeepSeek / Trae / WorkBuddy 的余额或累计消费 | `~/.config/agent-quota/usage.log` |
 
 - plist：`~/Library/LaunchAgents/com.agentquota.checkin.plist`、`~/Library/LaunchAgents/com.agentquota.usage.plist`；

@@ -1794,7 +1794,7 @@ final class SettingsWindowController: NSWindowController {
                 }
             }
             source.toolTip = id == "doubao" ? "在屏幕录制权限中允许 Agent 额度读取豆包侧栏" : "在访达中显示额度文件"
-            actions = [source]
+            actions = id == "doubao" ? [configure, source] : [source]
         }
         let row = NSStackView(views: [avatar, info, spacer, account, visibility] + actions)
         row.orientation = .horizontal

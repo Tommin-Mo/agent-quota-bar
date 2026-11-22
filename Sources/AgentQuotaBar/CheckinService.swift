@@ -1,6 +1,6 @@
 import Foundation
 
-/// 每日自动签到：Trae + WorkBuddy。
+/// 每日自动签到：Trae + WorkBuddy + 豆包（豆包需要 Cookie）。
 /// 由 App 启动时和每 15 分钟的定时器触发；同一天成功后不再重复。
 final class CheckinService {
     private let service: QuotaService
@@ -92,7 +92,8 @@ final class CheckinService {
             switch result {
             case .success(let report):
                 let summary = report.results.map { item -> String in
-                    let name = item.provider == "trae" ? "Trae" : "WorkBuddy"
+                    let name = item.provider == "trae" ? "Trae"
+                        : (item.provider == "workbuddy" ? "WorkBuddy" : "豆包")
                     switch item.status {
                     case "ok":
                         let points = item.points.map { " +\(Int($0))" } ?? ""

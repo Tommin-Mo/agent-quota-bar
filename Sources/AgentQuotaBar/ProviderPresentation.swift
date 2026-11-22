@@ -155,6 +155,7 @@ extension ProviderStatus {
             return "订阅 · \(formatter.string(from: date)) 到期\(renew)"
         }
         if case .currency = unit { return "API 余额（按量计费）" }
+        if id == "doubao", let detail, !detail.isEmpty { return detail }
         if case .points = unit { return "" }
         if let detail, !detail.isEmpty { return detail.replacingOccurrences(of: " 订阅额度", with: "") }
         return connection.title

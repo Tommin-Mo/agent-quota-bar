@@ -5,8 +5,8 @@ set -euo pipefail
 # Info.plist 的 CFBundleShortVersionString / CFBundleVersion 由这两个变量生成。
 # 注意：设置窗口左上角的 "v0.4" 仍是 Swift 源码里的静态文案
 # （SettingsWindowController.swift），不归本脚本管，发版时需同步。
-VERSION="0.8.1"
-BUILD="32"
+VERSION="0.9.0"
+BUILD="33"
 
 BUNDLE_ID="com.tommin.agentquotabar"
 
