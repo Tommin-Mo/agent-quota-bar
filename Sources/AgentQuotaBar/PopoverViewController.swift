@@ -933,6 +933,11 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
                 badge.toolTip = "今日已签到"
                 badge.setAccessibilityLabel("今日已签到")
                 nameRow.addArrangedSubview(badge)
+            } else if CheckinService.result(for: provider.id, in: ConfigStore()) == "签到失败" {
+                let failed = label("签到失败", size: 10, weight: .medium, color: Theme.danger)
+                failed.toolTip = "签到请求已执行，但服务端没有返回成功；可在设置 → 运行与签到查看原因"
+                failed.setAccessibilityLabel("签到失败")
+                nameRow.addArrangedSubview(failed)
             }
         }
         if let serviceStatus = provider.serviceStatus, serviceStatus != "ok" {

@@ -151,8 +151,9 @@ extension ProviderStatus {
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "zh_CN")
             formatter.dateFormat = "M/d"
-            let renew = subscriptionWillRenew == true ? " · 自动续费" : ""
-            return "订阅 · \(formatter.string(from: date)) 到期\(renew)"
+            // 面板行宽有限，显示完整日期即可；自动续费保留在 tooltip/详情里，
+            // 避免出现 "订阅 · 12/23 到期 · 自..." 这种被截断的文案。
+            return "订阅 · \(formatter.string(from: date)) 到期"
         }
         if case .currency = unit { return "API 余额（按量计费）" }
         if id == "doubao", let detail, !detail.isEmpty { return detail }
@@ -166,6 +167,7 @@ extension ProviderStatus {
         switch plan.lowercased() {
         case "prolite": return "Pro Lite"
         case "pro": return "Pro"
+        case "plus": return "Plus"
         case "free": return "免费"
         default: return plan
         }
