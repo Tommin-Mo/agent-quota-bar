@@ -726,7 +726,9 @@ for _ in 0..<10 {
     for tab in tabs {
         tab.performClick(nil)
         settings2.window!.contentView!.layoutSubtreeIfNeeded()
-        unneededScroll = unneededScroll || views(settings2.window!.contentView!).contains { $0 is NSScrollView }
+        unneededScroll = unneededScroll || views(settings2.window!.contentView!).contains {
+            $0 is NSScrollView && $0.identifier?.rawValue != "service-scroll"
+        }
         stablePages = stablePages && settings2.window!.frame == initialFrame && tab.selected
     }
 }
@@ -786,7 +788,7 @@ submitNumber(warn, "2")
 check(QuotaStyle.warningPercent == 2 && Double(danger.stringValue) == 1, "warning and danger boundaries stay ordered")
 let configureNames = settingsViews.compactMap { $0 as? NSButton }.filter { $0.title == "配置…" }.compactMap { $0.accessibilityLabel() }
 check(settingsViews.compactMap { $0 as? NSButton }.filter { $0.title == "配置…" }.allSatisfy { $0.isBordered && $0.fittingSize.height >= 24 }, "service configuration actions have a visible target at least 24 pt high")
-check(Set(configureNames).count == 5, "five configuration buttons identify their service")
+check(Set(configureNames).count == 6, "six configuration buttons identify their service")
 let dateButtons = views(historyRoot).compactMap { $0 as? NSButton }.filter { $0.isEnabled && $0.identifier?.rawValue.hasPrefix(String(todayKey.prefix(7))) == true }
 if dateButtons.count > 1 {
     for day in dateButtons.suffix(2) { _ = day.sendAction(day.action,to:day.target) }

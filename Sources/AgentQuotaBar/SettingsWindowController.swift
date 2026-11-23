@@ -320,7 +320,8 @@ final class SettingsWindowController: NSWindowController {
         return original + ProviderRegistry.ids.filter { !original.contains($0) }
     }
     private let serviceList = NSStackView()
-    private let servicePages = SettingsPopUpButton()
+    private let serviceScroll = NSScrollView()
+    private var serviceScrollHeight: NSLayoutConstraint?
     private weak var displayHeading: NSTextField?
     private var displayHeadingPosition: NSLayoutConstraint?
     private var listedServices: [String] = []
@@ -1119,9 +1120,6 @@ final class SettingsWindowController: NSWindowController {
         serviceList.orientation = .vertical
         serviceList.alignment = .leading
         serviceList.spacing = 0
-        servicePages.target = self
-        servicePages.action = #selector(displayServicePage)
-        servicePages.setAccessibilityLabel("服务列表分页")
         rebuildServiceList()
         let tableHeader = NSView()
         tableHeader.heightAnchor.constraint(equalToConstant: 33).isActive = true
@@ -1161,10 +1159,32 @@ final class SettingsWindowController: NSWindowController {
             } catch { NSApp.presentError(error) }
         }
         directory.toolTip = "打开其他 Agent 的额度文件目录"
-        let footer = NSStackView(views: [directory, NSView(), servicePages])
+        let scrollHint = label("上下滚动查看全部", size: 11, color: Theme.tertiary)
+        let footer = NSStackView(views: [directory, NSView(), scrollHint])
         footer.orientation = .horizontal
         footer.edgeInsets = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
-        let table = groupCard([tableHeader, separator(), serviceList, footer])
+
+        serviceScroll.drawsBackground = false
+        serviceScroll.hasVerticalScroller = true
+        serviceScroll.autohidesScrollers = true
+        serviceScroll.scrollerStyle = .overlay
+        serviceScroll.borderType = .noBorder
+        serviceScroll.translatesAutoresizingMaskIntoConstraints = false
+        serviceList.translatesAutoresizingMaskIntoConstraints = false
+        serviceScroll.documentView = serviceList
+        let clip = serviceScroll.contentView
+        NSLayoutConstraint.activate([
+            serviceList.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            serviceList.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
+            serviceList.topAnchor.constraint(equalTo: clip.topAnchor),
+            serviceList.widthAnchor.constraint(equalTo: clip.widthAnchor),
+        ])
+        serviceScroll.identifier = NSUserInterfaceItemIdentifier("service-scroll")
+        serviceScroll.setAccessibilityLabel("服务与账户列表")
+        serviceScroll.setAccessibilityRole(.list)
+        serviceScrollHeight = serviceScroll.heightAnchor.constraint(equalToConstant: 260)
+        serviceScrollHeight?.isActive = true
+        let table = groupCard([tableHeader, separator(), serviceScroll, footer])
         displayHeading = visibilityHeading
         alignServiceHeading()
         return [table, composePage([
@@ -1177,14 +1197,10 @@ final class SettingsWindowController: NSWindowController {
         let names = providerOrder.map { ProviderStyles.style(for: $0).shortName }
         let identity = zip(providerOrder, names).map { $0 + ":" + $1 }
         guard identity != listedServices else { return }
-        let oldPage = max(0, servicePages.indexOfSelectedItem)
         listedServices = identity
-        servicePages.removeAllItems()
-        for start in stride(from: 0, to: names.count, by: 5) {
-            servicePages.addItem(withTitle: "服务 \(start + 1)–\(min(start + 5, names.count))")
-        }
-        servicePages.selectItem(at: min(oldPage, servicePages.numberOfItems - 1))
-        servicePages.isHidden = names.count <= 5
+        let visibleRows = min(5, max(1, providerOrder.count))
+        let desiredHeight = CGFloat(visibleRows) * 52 + 2
+        serviceScrollHeight?.constant = min(300, max(150, desiredHeight))
         for (id, view) in serviceViews where !providerOrder.contains(id) {
             view.removeFromSuperview()
             serviceViews.removeValue(forKey: id)
@@ -1204,8 +1220,7 @@ final class SettingsWindowController: NSWindowController {
 
     private func alignServiceHeading() {
         displayHeadingPosition?.isActive = false
-        let offset = max(0, servicePages.indexOfSelectedItem) * 5
-        guard let first = providerOrder.dropFirst(offset).first, let toggle = visibilitySwitches[first],
+        guard let first = providerOrder.first, let toggle = visibilitySwitches[first],
               let displayHeading, toggle.window != nil || serviceList.superview != nil else { return }
         displayHeadingPosition = displayHeading.centerXAnchor.constraint(equalTo: toggle.centerXAnchor)
         displayHeadingPosition?.isActive = true
@@ -1214,8 +1229,7 @@ final class SettingsWindowController: NSWindowController {
     @objc private func displayServicePage() {
         displayHeadingPosition?.isActive = false
         serviceList.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let offset = max(0, servicePages.indexOfSelectedItem) * 5
-        for id in providerOrder.dropFirst(offset).prefix(5) {
+        for id in providerOrder {
             guard let row = serviceViews[id] else { continue }
             if !serviceList.arrangedSubviews.isEmpty {
                 let rule = separator()
