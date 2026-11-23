@@ -519,7 +519,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let icon: MenuBarIcon
         if let snapshot = visibleSnapshot {
-            let configured = service.config.string("menuBarProvider", default: "auto")
+            // 自动模式只看 activeProviderID；menuBarProvider 是“固定模式”的遗留值，
+            // 不能在 auto 下抢走最近活动服务（之前就是这样把 OpenCode 压成了 Codex）。
+            let configured = mode == "fixed" ? service.config.string("menuBarProvider", default: "auto") : "auto"
             let providerID = activeProviderID
                 ?? (configured == "auto" ? nil : configured)
                 ?? snapshot.worstProviderID()
@@ -773,7 +775,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if activeProviderID == nil || snapshot.provider(withID: activeProviderID!) == nil {
-            let configured = service.config.string("menuBarProvider", default: "auto")
+            let configured = mode == "fixed" ? service.config.string("menuBarProvider", default: "auto") : "auto"
             if configured != "auto", snapshot.provider(withID: configured) != nil {
                 activeProviderID = configured
             } else if let recent = recentActivityProvider(snapshot: snapshot, now: now) {
