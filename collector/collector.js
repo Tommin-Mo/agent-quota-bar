@@ -1949,7 +1949,10 @@ function writeCheckinConfig(results) {
       const checkin = raw.checkin && typeof raw.checkin === 'object' ? raw.checkin : {};
       const failed = results.some((r) => r.status === 'failed');
       const summary = results.map((r) => {
-        const name = r.provider === 'trae' ? 'Trae' : 'WorkBuddy';
+        const name = r.provider === 'trae' ? 'Trae'
+          : r.provider === 'workbuddy' ? 'WorkBuddy'
+          : r.provider === 'doubao' ? '豆包'
+          : r.provider;
         if (r.status === 'ok') return `${name} +${r.points ?? 100}`;
         if (r.status === 'already') return `${name} 已签`;
         if (r.status === 'inactive') return `${name} 未开放`;
@@ -2022,6 +2025,7 @@ const DOUBAO_GROUP = 'pc_incentive_task_mvp_v3';
 const DOUBAO_LOGIN_INVALID = 710012001;
 const DOUBAO_NO_ACTIVITY = 710010702;
 const DOUBAO_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) DoubaoDesktop/2.32.6 Chrome/147.0.7727.149 Safari/537.36';
+const DOUBAO_QUOTA = 'https://www.doubao.com/alice/commerce/sale/subscription/quota_balance/detail/';
 
 function doubaoCookie(raw) {
   return String(raw || '').replace(/^\s*cookie\s*:\s*/i, '').replace(/[\r\n]+/g, ' ').replace(/\s*;\s*/g, '; ').trim();
@@ -2064,6 +2068,40 @@ function doubaoPost(url, cookie, body) {
   return response.json;
 }
 
+function doubaoNumber(value) {
+  const n = Number(String(value == null ? '' : value).replace(/,/g, ''));
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function doubaoWorkCookie(cookie) {
+  return /(?:^|;\s*)(feishu_dpop_keypair|has_biz_token|LARK_SUITE_ACCESS_TOKEN)=/i.test(cookie);
+}
+
+/**
+ * 订阅额度接口。注意必须 POST：GET 会 404；POST 不需要 a_bogus。
+ * data.total_remaining_amount 才是「可用额度」，不是活动页的累计获得额度。
+ */
+function doubaoQuota(cookie) {
+  const params = new URLSearchParams({
+    version_code: '20800', language: 'zh', device_platform: 'web', doubao_device_platform: 'web',
+    aid: '582478', real_aid: '582478', pkg_type: 'release_version', device_id: '',
+    pc_version: '2.35.22', doubao_pc_version: '2.35.22', region: '', sys_region: '',
+    samantha_web: '1', web_platform: 'desktop', 'use-olympus-account': '1', web_tab_id: '0',
+    ...doubaoDeviceIds(cookie),
+  });
+  const body = doubaoPost(DOUBAO_QUOTA + '?' + params.toString(), cookie, {});
+  if (Number(body.code) !== 0) throw new Error('豆包额度面板异常：' + String(body.msg || body.message || ('code ' + body.code)));
+  const data = body.data || {};
+  const available = doubaoNumber(data.total_remaining_amount);
+  if (available === undefined) throw new Error('豆包额度接口没有返回可用额度');
+  const summaries = Array.isArray(data.summaries) ? data.summaries : [];
+  const parts = summaries
+    .map((item) => [item && item.title, doubaoNumber(item && item.remaining_amount)])
+    .filter(([title, amount]) => title && amount !== undefined)
+    .map(([title, amount]) => title + ' ' + Math.round(amount).toLocaleString('en-US'));
+  return { available, detail: parts.join(' · ') || '订阅额度' };
+}
+
 function doubaoStatus(cookie) {
   const body = doubaoPost(doubaoUrl(DOUBAO_DETAIL, cookie), cookie, { campaign_group_code: DOUBAO_GROUP });
   const code = Number(body.code);
@@ -2085,6 +2123,9 @@ function doubaoStatus(cookie) {
 function doubaoCheckin(cfg) {
   const cookie = doubaoCookie(cfg.cookie);
   if (!cookie) return { provider: 'doubao', status: 'failed', message: '未配置豆包 Cookie' };
+  if (doubaoWorkCookie(cookie)) {
+    return { provider: 'doubao', status: 'inactive', message: '豆包工作/飞书企业账号没有每日签到' };
+  }
   try {
     const status = doubaoStatus(cookie);
     if (status.checkedIn) {
@@ -2093,7 +2134,9 @@ function doubaoCheckin(cfg) {
     const body = doubaoPost(doubaoUrl(DOUBAO_CHECKIN, cookie), cookie, { scene: DOUBAO_GROUP });
     const code = Number(body.code);
     if (code === DOUBAO_LOGIN_INVALID) throw new Error('豆包登录已过期，请重新复制 Cookie');
-    if (code === DOUBAO_NO_ACTIVITY) throw new Error('这个豆包账号没有可领的签到活动');
+    if (code === DOUBAO_NO_ACTIVITY) {
+      return { provider: 'doubao', status: 'inactive', message: '这个豆包账号没有可领的签到活动' };
+    }
     if (code !== 0) throw new Error('豆包签到失败：' + String(body.msg || body.message || ('code ' + code)));
     const payload = body.data || {};
     return {
@@ -2111,20 +2154,38 @@ function doubaoCheckin(cfg) {
 function collectDoubao(cfg = {}) {
   const cookie = doubaoCookie(cfg.cookie);
   if (cookie) {
+    let status = null;
+    let quota = null;
     try {
-      const status = doubaoStatus(cookie);
+      status = doubaoStatus(cookie);
+    } catch (e) {
+      if (/登录已过期/.test(e.message || '')) return failed('doubao', '豆包', e.message);
+    }
+    try {
+      quota = doubaoQuota(cookie);
+    } catch (e) {
+      if (/登录已过期/.test(e.message || '')) return failed('doubao', '豆包', e.message);
+    }
+    if (quota) {
+      const work = doubaoWorkCookie(cookie);
+      const sign = work
+        ? '豆包工作账号 · 无每日签到'
+        : (status
+          ? (status.checkedIn ? '今日已签 · 连续 ' + status.continuousDays + ' 天' : '今日待签 · 连续 ' + status.continuousDays + ' 天')
+          : '每日签到状态未知');
+      return provider('doubao', '豆包', 'ok',
+        [creditMetric('可用额度', quota.available, '', quota.detail)],
+        { balance: quota.available, detail: quota.detail, sampledAt: new Date().toISOString() });
+    }
+    if (status) {
       const detail = status.checkedIn
         ? '今日已签 · 连续 ' + status.continuousDays + ' 天'
         : '今日待签 · 连续 ' + status.continuousDays + ' 天';
       return provider('doubao', '豆包', 'ok',
         [creditMetric('累计额度', status.totalAmount, '', detail)],
         { detail, sampledAt: new Date().toISOString(), checkin: status });
-    } catch (e) {
-      // Cookie 失效/无活动时保留 OCR 兜底，不把整个豆包行变成错误。
-      if (!/登录已过期|没有每日签到任务/.test(e.message || '')) {
-        return failed('doubao', '豆包', e.message || String(e));
-      }
     }
+    return failed('doubao', '豆包', '豆包额度接口暂时不可用');
   }
   const bundled = path.resolve(__dirname, '../MacOS/AgentQuotaBar');
   const reader = fs.existsSync(bundled) ? bundled :

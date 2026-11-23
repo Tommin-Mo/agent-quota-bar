@@ -938,6 +938,11 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
                 failed.toolTip = "签到请求已执行，但服务端没有返回成功；可在设置 → 运行与签到查看原因"
                 failed.setAccessibilityLabel("签到失败")
                 nameRow.addArrangedSubview(failed)
+            } else if CheckinService.result(for: provider.id, in: ConfigStore()) == "未开放" {
+                let inactive = label("无签到", size: 10, color: Theme.tertiary)
+                inactive.toolTip = "这个豆包账号没有每日签到活动"
+                inactive.setAccessibilityLabel("无每日签到")
+                nameRow.addArrangedSubview(inactive)
             }
         }
         if let serviceStatus = provider.serviceStatus, serviceStatus != "ok" {

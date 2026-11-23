@@ -44,10 +44,12 @@ macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek / �
 | OpenCode | Zen 余额（$）或 Go 的 5h/周/月 | Console Cookie（可 opt-in 从 Chrome 导入），或 Go API Key | 二选一 |
 | Trae | 剩余积分 + 已用 / 总量 | 本机登录态 → `/trae/api/v2/pay/ide_user_ent_usage` | 否 |
 | WorkBuddy | 剩余积分 + 连续签到天数 | 本机 WorkBuddy 安全存储自动解封 → 官方 billing 接口 | 否 |
-| 豆包 | 累计额度 + 每日签到 | 豆包 Cookie（推荐）或客户端侧栏文字识别 | Cookie；OCR 兜底需屏幕录制权限 |
+| 豆包 | 可用额度 + 每日签到（仅个人账号） | 豆包 Cookie（推荐）或客户端侧栏文字识别 | Cookie；OCR 兜底需屏幕录制权限 |
 | 本地 Agent | 周期额度、积分或余额 | Agent 导出的 JSON 文件 | 在接入目录放入数据源 |
 
-豆包的「天天领额度」支持个人账号每日签到。设置 → 服务与账户 → 豆包 → 配置，粘贴 `doubao.com` 的 Cookie 后即可查询累计额度并自动签到；Cookie 保存在本机 0600 配置中，不写日志。工作/企业账号可能没有签到活动，接口会明确返回「没有可领的签到活动」。未配置 Cookie 时仍可用客户端侧栏 OCR 读取「可用额度」作为兜底，识别在本机完成，图像不落盘。
+豆包分为「可用额度」和活动页的「累计获得额度」，App 现在走订阅额度接口的 `quota_balance/detail`，显示真正的**可用额度**（套餐 + 赠送），不再拿累计获得值冒充余额。设置 → 服务与账户 → 豆包 → 配置，粘贴 `doubao.com` 的 Cookie 后即可查询并自动签到；Cookie 保存在本机 0600 配置中，不写日志。
+
+**只有个人豆包账号有每日签到。豆包工作 / 飞书企业账号的 Cookie 会带 `feishu_dpop_keypair` / `has_biz_token`，服务端返回 `710010702`，这是没有签到活动，不是登录失效；App 会显示「豆包 未开放」，不会反复重试。** 未配置 Cookie 时仍可用客户端侧栏 OCR 读取可用额度作为兜底。
 
 ### 豆包 Cookie
 
@@ -350,7 +352,7 @@ ln -s "$PWD/scripts/agent-quota.swiftbar.js" \
 
 ## 每日签到
 
-Trae、WorkBuddy 与配置了 Cookie 的豆包每天自动签到，默认 09:00，失败每 30 分钟重试。面板右上角有一个**一键签到**按钮，同时签 Trae、WorkBuddy 和豆包；完成后按钮自动隐藏。菜单栏右键的「一键签到 Trae / WorkBuddy / 豆包」也会在完成后隐藏。
+Trae、WorkBuddy 与配置了 Cookie 的个人豆包每天自动签到，默认 09:00。豆包签到走 **HTTPS 接口**，不打开浏览器、不控制鼠标；工作/企业账号会被识别为「未开放」，不会当成失败每 30 分钟重试。面板右上角有一个**一键签到**按钮，同时签 Trae、WorkBuddy 和豆包；完成后按钮自动隐藏。菜单栏右键的「一键签到 Trae / WorkBuddy / 豆包」也会在完成后隐藏。
 
 - Trae：`/trae/api/v2/ug/checkin_credits/status` + `/claim`；`x-device-id` 从本机 `storage.json` 的 `iCubeAuthInfo://icube-dc:<deviceId>` 读取，不能用自造设备号（否则返回 9074）
 - WorkBuddy：`/v2/billing/meter/checkin-activity-status` + `/daily-checkin`
