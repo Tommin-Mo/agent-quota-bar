@@ -638,33 +638,48 @@ function failed(id, name, message) {
 
 // ---------------------------------------------------------------- Codex / ChatGPT
 
-function codexWindows(rateLimit) {
+function codexWindows(rateLimit, additionalRateLimits = null, codeReviewRateLimit = null) {
   const metrics = [];
+  const seen = new Set();
 
-  const primary = rateLimit.primary_window;
-  if (primary && num(primary.used_percent) !== undefined) {
-    metrics.push(
-      percentMetric(
-        windowLabel(num(primary.limit_window_seconds)),
-        num(primary.used_percent),
-        num(primary.reset_at) ? num(primary.reset_at) * 1000 : null,
-        rateLimit.allowed === false ? '已达上限' : ''
-      )
-    );
+  function addWindow(label, window, extraDetail = '') {
+    if (!window || num(window.used_percent) === undefined) return;
+    const base = windowLabel(num(window.limit_window_seconds));
+    let finalLabel = label ? `${label} · ${base}` : base;
+    if (seen.has(finalLabel)) finalLabel += ' · 额外';
+    seen.add(finalLabel);
+    metrics.push(percentMetric(
+      finalLabel,
+      num(window.used_percent),
+      num(window.reset_at) ? num(window.reset_at) * 1000 : null,
+      extraDetail
+    ));
   }
-  const secondary = rateLimit.secondary_window;
-  if (secondary && num(secondary.used_percent) !== undefined) {
-    metrics.push(
-      percentMetric(
-        windowLabel(num(secondary.limit_window_seconds)),
-        num(secondary.used_percent),
-        num(secondary.reset_at) ? num(secondary.reset_at) * 1000 : null
-      )
-    );
+
+  function addRateLimit(rateLimit, prefix = '') {
+    if (!rateLimit || typeof rateLimit !== 'object') return;
+    const windows = [
+      ['primary_window', ''],
+      ['secondary_window', ''],
+      ['tertiary_window', ''],
+      ['monthly_window', ''],
+      ['individual_window', ''],
+    ];
+    for (const [key, suffix] of windows) addWindow(suffix ? `${prefix}${suffix}` : prefix, rateLimit[key], rateLimit.allowed === false ? '已达上限' : '');
+  }
+
+  addRateLimit(rateLimit);
+  addRateLimit(codeReviewRateLimit, '代码审查');
+  const extras = Array.isArray(additionalRateLimits)
+    ? additionalRateLimits
+    : (additionalRateLimits && typeof additionalRateLimits === 'object' ? Object.values(additionalRateLimits) : []);
+  for (const item of extras) {
+    if (!item || typeof item !== 'object') continue;
+    const label = String(item.limit_name || item.name || item.model || item.title || item.feature || '额外').trim();
+    addRateLimit(item.rate_limit || item, label);
   }
   return metrics;
 }
-
 function collectCodex(cfg = {}) {
   const expandPath = (value) => {
     if (value === '~') return HOME;
@@ -710,7 +725,7 @@ function collectCodex(cfg = {}) {
   const plan = pick(j, 'plan_type') || '';
   const email = pick(j, 'email') || '';
   const rateLimit = j.rate_limit || {};
-  const metrics = codexWindows(rateLimit);
+  const metrics = codexWindows(rateLimit, j.additional_rate_limits, j.code_review_rate_limit);
 
   const credits = j.credits || {};
   const balance = num(credits.balance);
@@ -719,6 +734,10 @@ function collectCodex(cfg = {}) {
       textMetric('积分余额', credits.unlimited ? '无限' : String(round(balance, 0)),
         credits.unlimited ? 'unlimited credits' : '')
     );
+  }
+  const resetCredits = num(j.rate_limit_reset_credits && j.rate_limit_reset_credits.available_count);
+  if (resetCredits !== undefined && resetCredits > 0) {
+    metrics.push(textMetric('重置券', String(round(resetCredits, 0)), '可用于重置额度窗口'));
   }
   if (!metrics.length) {
     return failed('codex', 'Codex', '用量接口没有返回可识别的窗口');
@@ -2118,7 +2137,11 @@ function collectDoubao(cfg = {}) {
     const balance = Number(token);
     return provider('doubao', '豆包', 'ok', [creditMetric('可用额度', balance, '', '')], { balance, sampledAt: new Date().toISOString() });
   }
-  const reasons = { permission: '请在系统设置中允许屏幕录制', notVisible: '请展开豆包侧栏的可用额度', notRunning: '请打开豆包客户端' };
+  const reasons = {
+    permission: cookie ? '屏幕录制权限未生效，请退出并重开 Agent 额度' : '未配置 Cookie；配置后可自动签到，也可允许屏幕录制读取可用额度',
+    notVisible: '请展开豆包侧栏的可用额度',
+    notRunning: '请打开豆包客户端',
+  };
   return failed('doubao', '豆包', reasons[token] || '暂时无法读取豆包额度');
 }
 

@@ -25,7 +25,15 @@ final class CheckinService {
     var hasCheckedInToday: Bool {
         guard config.string("checkin.lastDate") == Self.todayKey else { return false }
         // 同一天可能先成功、后手动重试失败；失败摘要不能算“已完成”。
-        return !config.string("checkin.lastSummary").contains("失败")
+        guard !config.string("checkin.lastSummary").contains("失败") else { return false }
+        // 豆包是后接入的：如果今天先签了 Trae/WorkBuddy，再配置 Cookie，
+        // 不能因为 lastDate 已存在就永远跳过豆包。必须看豆包自己的结果。
+        if config.bool("providers.doubao.enabled", default: true),
+           !config.string("providers.doubao.cookie").isEmpty {
+            let result = config.string("checkin.results.doubao")
+            guard result == "ok" || result == "already" || result == "inactive" else { return false }
+        }
+        return true
     }
 
     static func result(for id: String, in config: ConfigStore) -> String {
@@ -46,6 +54,13 @@ final class CheckinService {
         let summary = rawSummary.contains("\n") || rawSummary.count > 180
             ? "签到失败，请重试"
             : rawSummary
+        if config.bool("providers.doubao.enabled", default: true),
+           config.string("providers.doubao.cookie").isEmpty {
+            if hasCheckedInToday {
+                return (summary.isEmpty ? "Trae / WorkBuddy 已签" : summary) + " · 豆包未配置 Cookie"
+            }
+            return "今日待签到 · 豆包未配置 Cookie"
+        }
         if hasCheckedInToday {
             return summary.isEmpty ? "未返回签到结果" : summary
         }
@@ -91,7 +106,7 @@ final class CheckinService {
             self.running = false
             switch result {
             case .success(let report):
-                let summary = report.results.map { item -> String in
+                var parts = report.results.map { item -> String in
                     let name = item.provider == "trae" ? "Trae"
                         : (item.provider == "workbuddy" ? "WorkBuddy" : "豆包")
                     switch item.status {
@@ -105,7 +120,12 @@ final class CheckinService {
                     default:
                         return "\(name) 失败"
                     }
-                }.joined(separator: " · ")
+                }
+                if self.config.bool("providers.doubao.enabled", default: true),
+                   self.config.string("providers.doubao.cookie").isEmpty {
+                    parts.append("豆包未配置 Cookie")
+                }
+                let summary = parts.joined(separator: " · ")
 
                 if let workbuddy = report.results.first(where: { $0.provider == "workbuddy" }),
                    let streak = workbuddy.streak {

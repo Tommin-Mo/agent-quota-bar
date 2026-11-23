@@ -1127,6 +1127,7 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
                 actionRow.addArrangedSubview(ClosureButton(title: "配置", onTap: onConfigure))
             } else if provider.id == "doubao", provider.error?.contains("屏幕录制") == true {
                 actionRow.addArrangedSubview(ClosureButton(title: "读取权限…", onTap: DoubaoQuota.openPermissions))
+                actionRow.addArrangedSubview(ClosureButton(title: "重启 App", onTap: DoubaoQuota.relaunch))
             }
             stack.addArrangedSubview(actionRow)
             actionRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true

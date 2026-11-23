@@ -20,6 +20,19 @@ enum DoubaoQuota {
         }
     }
 
+    /// 系统设置里已经打开屏幕录制、但 App 仍报 permission 时，TCC 通常要
+    /// 进程重启后才会生效。这里显式重新拉起当前 .app。
+    static func relaunch() {
+        let app = Bundle.main.bundleURL
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-n", app.path]
+        try? process.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            NSApp.terminate(nil)
+        }
+    }
+
     static func read() async -> String {
         guard !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty else { return "notRunning" }
         guard CGPreflightScreenCaptureAccess() else { return "permission" }
