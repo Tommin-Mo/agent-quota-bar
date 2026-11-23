@@ -7,8 +7,9 @@ import Foundation
 /// App 正在运行时跳过（App 自己的 60s 深采已经覆盖），减少重复请求与并发写入。
 enum UsageSampler {
     static let label = "com.agentquota.usage"
-    /// 后台采样只关心这三家的消费累计。
-    static let sampledProviderIDs = ["deepseek", "trae", "workbuddy"]
+    /// 后台采样只关心需要累计消费/重置历史的服务。
+    /// Codex 的 5 小时窗口重置和 OpenCode 的额度窗口都要在 App 关闭时也留下记录。
+    static let sampledProviderIDs = ["deepseek", "trae", "workbuddy", "codex", "opencode"]
 
     static func run() {
         guard LaunchAgentInstaller.ownsBackgroundTasks, !guiAppIsRunning() else { return }

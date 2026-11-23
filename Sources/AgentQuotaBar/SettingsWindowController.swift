@@ -322,6 +322,7 @@ final class SettingsWindowController: NSWindowController {
     private let serviceList = NSStackView()
     private let serviceScroll = NSScrollView()
     private var serviceScrollHeight: NSLayoutConstraint?
+    private let serviceScrollHint = NSTextField(labelWithString: "")
     private weak var displayHeading: NSTextField?
     private var displayHeadingPosition: NSLayoutConstraint?
     private var listedServices: [String] = []
@@ -1159,14 +1160,16 @@ final class SettingsWindowController: NSWindowController {
             } catch { NSApp.presentError(error) }
         }
         directory.toolTip = "打开其他 Agent 的额度文件目录"
-        let scrollHint = label("上下滚动查看全部", size: 11, color: Theme.tertiary)
-        let footer = NSStackView(views: [directory, NSView(), scrollHint])
+        serviceScrollHint.font = .systemFont(ofSize: 11)
+        serviceScrollHint.textColor = Theme.tertiary
+        serviceScrollHint.alignment = .right
+        let footer = NSStackView(views: [directory, NSView(), serviceScrollHint])
         footer.orientation = .horizontal
         footer.edgeInsets = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
 
         serviceScroll.drawsBackground = false
         serviceScroll.hasVerticalScroller = true
-        serviceScroll.autohidesScrollers = true
+        serviceScroll.autohidesScrollers = false
         serviceScroll.scrollerStyle = .overlay
         serviceScroll.borderType = .noBorder
         serviceScroll.translatesAutoresizingMaskIntoConstraints = false
@@ -1198,9 +1201,7 @@ final class SettingsWindowController: NSWindowController {
         let identity = zip(providerOrder, names).map { $0 + ":" + $1 }
         guard identity != listedServices else { return }
         listedServices = identity
-        let visibleRows = min(5, max(1, providerOrder.count))
-        let desiredHeight = CGFloat(visibleRows) * 52 + 2
-        serviceScrollHeight?.constant = min(300, max(150, desiredHeight))
+        updateServiceScrollHeight()
         for (id, view) in serviceViews where !providerOrder.contains(id) {
             view.removeFromSuperview()
             serviceViews.removeValue(forKey: id)
@@ -1214,8 +1215,22 @@ final class SettingsWindowController: NSWindowController {
             }
         }
         displayServicePage()
+        DispatchQueue.main.async { [weak self] in self?.updateServiceScrollHeight() }
         reloadOrder()
         populateFixedProviders()
+    }
+
+    private func updateServiceScrollHeight() {
+        let rows = providerOrder.compactMap { serviceViews[$0] }
+        guard !rows.isEmpty else {
+            serviceScrollHeight?.constant = 150
+            return
+        }
+        let visible = Array(rows.prefix(5))
+        let contentHeight = visible.reduce(CGFloat(0)) { $0 + max(1, $1.fittingSize.height) }
+            + CGFloat(max(0, visible.count - 1))
+        // 只显示完整行：第六家及以后通过滚动查看，绝不把下一行切一半。
+        serviceScrollHeight?.constant = min(300, max(150, contentHeight))
     }
 
     private func alignServiceHeading() {
@@ -1228,6 +1243,9 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func displayServicePage() {
         displayHeadingPosition?.isActive = false
+        serviceScrollHint.stringValue = providerOrder.count > 5
+            ? "还有 \(providerOrder.count - 5) 个 · 上下滚动"
+            : ""
         serviceList.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for id in providerOrder {
             guard let row = serviceViews[id] else { continue }
@@ -1240,6 +1258,7 @@ final class SettingsWindowController: NSWindowController {
             row.widthAnchor.constraint(equalTo: serviceList.widthAnchor).isActive = true
         }
         alignServiceHeading()
+        DispatchQueue.main.async { [weak self] in self?.updateServiceScrollHeight() }
     }
 
     private func makeAlertsPage() -> [NSView] {

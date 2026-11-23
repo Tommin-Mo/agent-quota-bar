@@ -115,6 +115,11 @@ final class HistoryStore {
                         return (codex || prior.timeIntervalSince1970 * 1000 < end) && end <= date.timeIntervalSince1970 * 1000 &&
                             provider.metrics.contains { $0.label == label && ($0.resetAt ?? 0) > end }
                     } ?? false
+                    if rolled {
+                        var resets = entry.windowResets ?? [:]
+                        resets[label, default: 0] += 1
+                        entry.windowResets = resets
+                    }
                     deltas.append(("周期：" + label, max(0, rolled ? used : used - previous)))
                     // Within a Codex window, a lower reading cannot undo already counted use.
                     baselines[label] = codex && !rolled ? max(previous, used) : used

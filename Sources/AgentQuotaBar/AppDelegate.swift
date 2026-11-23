@@ -257,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 历史默认是整体额度监控；具体 Agent 在窗口内选择。
             historyController = HistoryWindowController(providerID: "all")
         }
-        historyController?.currentSnapshotProvider = { [weak self] in guard let self else { return nil }; return self.service.snapshot?.excluding(Set(self.service.config.stringArray("hiddenProviders"))) }
+        historyController?.currentSnapshotProvider = { [weak self] in guard let self else { return nil }; return self.service.snapshot }
         historyController?.refreshForExternalSnapshot()
         historyController?.showWindow(nil)
         historyController?.window?.makeKeyAndOrderFront(nil)
@@ -767,8 +767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            now.timeIntervalSince(lastSwitchAt) >= switchCooldown {
             // 冷却期间只暂存，不丢；到点再切，切完清空，避免旧事件反复触发。
             activeProviderID = pendingUsage.id
-            service.config.set("lastActiveProvider", pendingUsage.id)
-            try? service.config.save()
+            persistActiveProvider(pendingUsage.id, at: now)
             lastSwitchAt = now
             self.pendingUsage = nil
         }
@@ -777,6 +776,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let configured = service.config.string("menuBarProvider", default: "auto")
             if configured != "auto", snapshot.provider(withID: configured) != nil {
                 activeProviderID = configured
+            } else if let recent = recentActivityProvider(snapshot: snapshot, now: now) {
+                activeProviderID = recent
+                persistActiveProvider(recent, at: now)
+            } else if let stored = storedActivityProvider(snapshot: snapshot, now: now) {
+                activeProviderID = stored
+                persistActiveProvider(stored, at: now)
             } else if let last = Optional(service.config.string("lastActiveProvider")),
                       !last.isEmpty,
                       snapshot.provider(withID: last) != nil {
@@ -792,6 +797,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            provider.status == "error" || provider.status == "unconfigured" {
             activeProviderID = snapshot.worstProviderID()
         }
+    }
+
+    /// 当本地会话库不可用（OpenCode 数据库为空/被清理）时，用已保存的 7 天
+    /// 历史活跃区间兜底，避免菜单栏永远停在上次某个余额服务上。
+    private func storedActivityProvider(snapshot: QuotaSnapshot, now: Date) -> String? {
+        var best: (id: String, score: Double)?
+        for provider in snapshot.providers where provider.isUsable {
+            let entries = HistoryStore.shared.entries(provider: provider.id, days: 7, now: now)
+            let score = entries.reduce(0.0) { total, entry in
+                total + Double(entry.activeIntervals ?? 0) + (entry.hasQuotaSpend ? 1 : 0)
+            }
+            guard score > 0 else { continue }
+            if best == nil || score > best!.score || (score == best!.score && provider.id < best!.id) {
+                best = (provider.id, score)
+            }
+        }
+        return best?.id
+    }
+
+    /// 启动时没有新的额度变化时，按最近真实活动决定菜单栏服务。
+    /// OpenCode 的本地会话时间比一个没有时间戳的 lastActiveProvider 更可靠；
+    /// 有 lastActiveAt 时则让时间较新的那一家胜出，避免旧的 DeepSeek 记录压住今天在用的 OpenCode。
+    private func recentActivityProvider(snapshot: QuotaSnapshot, now: Date) -> String? {
+        var best: (id: String, at: Date)?
+        if let session = OpenCodeActivity.latestSessionDate(),
+           snapshot.provider(withID: "opencode")?.isUsable == true,
+           now.timeIntervalSince(session) < 7 * 24 * 3600 {
+            best = ("opencode", session)
+        }
+        let lastID = service.config.string("lastActiveProvider")
+        let raw = service.config.string("lastActiveAt")
+        if !raw.isEmpty,
+           let date = FlexibleDateParser.date(from: raw),
+           !lastID.isEmpty,
+           snapshot.provider(withID: lastID)?.isUsable == true,
+           now.timeIntervalSince(date) < 7 * 24 * 3600 {
+            if best == nil || date > best!.at { best = (lastID, date) }
+        }
+        return best?.id
+    }
+
+    private func persistActiveProvider(_ id: String, at date: Date) {
+        service.config.set("lastActiveProvider", id)
+        service.config.set("lastActiveAt", ISO8601DateFormatter().string(from: date))
+        try? service.config.save()
     }
 
     @objc private func handleSystemWake(_ notification: Notification) {

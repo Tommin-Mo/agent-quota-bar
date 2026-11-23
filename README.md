@@ -29,6 +29,7 @@ macOS 菜单栏小工具：**OpenCode / Codex / WorkBuddy / Trae / DeepSeek / �
 - 每个百分比窗口都有进度条（包括只有一条额度的 Codex）；余额/积分行不画进度条。
 - 重置时间：24 小时内精确到分钟（`3 小时 50 分钟后重置`），超过 24 小时只显示到小时（`3 天 5 小时后重置`），避免过长。
 - Trae / WorkBuddy / 豆包的签到状态直接放在各自行里：已签显示「✓ 今日已签」，未签显示「签到」入口。
+- **历史不跟随隐藏开关**：在面板里隐藏 Codex 只影响菜单栏/面板，历史窗口仍保留 Codex 的历史记录和 5 小时重置次数，避免数据看起来“消失”。
 - 百分比服务按窗口显示 `5 小时消耗 1%`、`本周消耗 9%`、`本月消耗 70%`，不把不同窗口相加。
 - Trae / WorkBuddy 显示累计消费基线差：`今日 -100`；DeepSeek 按余额下降累计 `今日 -¥0.42`，没有变化就隐藏，不显示 `—` 或 `≈`。
 - 主数值和进度条统一使用青色；低于警戒/危险阈值才变橙/红，签到成功也是同一青色，避免多种绿。
@@ -363,7 +364,7 @@ Trae、WorkBuddy 与配置了 Cookie 的豆包每天自动签到，默认 09:00�
 | `com.agentquota.usage` | 每 300 秒 + 登录时（App 运行时跳过；App 内 DeepSeek 每 60 秒、Trae/WorkBuddy 跟随整包刷新） | 采样 DeepSeek / Trae / WorkBuddy 的余额或累计消费 | `~/.config/agent-quota/usage.log` |
 
 - plist：`~/Library/LaunchAgents/com.agentquota.checkin.plist`、`~/Library/LaunchAgents/com.agentquota.usage.plist`；
-- 用量采样只覆盖 **DeepSeek（余额）、Trae / WorkBuddy（累计消费）**，不采集 OpenCode / Codex；
+- 用量采样覆盖 **DeepSeek（余额）、Trae / WorkBuddy（累计消费）、Codex（额度窗口/重置）和 OpenCode（额度窗口）**；后台每 5 分钟一次，App 运行时由 App 自己刷新；
 - 状态写在 `~/.config/agent-quota/usage.json`（600，`NSDistributedLock` 文件锁），App 关闭也继续记录；
 - App 运行期间另有 60 秒一次的 DeepSeek 余额采样（只刷新 DeepSeek 一行，用于累计今日消费）；
 - 签到脚本是 App 内的 `Contents/Resources/checkin-background.sh`；用量采样直接调用 App 可执行文件的 `--usage-sample`。移动 App 后重新打开一次，LaunchAgent 路径会自动更新。

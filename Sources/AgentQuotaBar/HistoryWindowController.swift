@@ -32,7 +32,9 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         let order = config.stringArray("providerOrder").filter { ProviderRegistry.ids.contains($0) }
         var seen = Set<String>()
         let ids = (order + ProviderRegistry.ids).filter { seen.insert($0).inserted }
-        return ids.filter { !config.stringArray("hiddenProviders").contains($0) && config.bool("providers.\($0).enabled", default: true) }
+        // 隐藏只影响菜单栏/面板；历史记录不能因为“当前不显示”就消失。
+        // 否则用户关掉 Codex 后，之前的所有 Codex 用量和重置都会从日历里蒸发。
+        return ids.filter { config.bool("providers.\($0).enabled", default: true) }
     }
     private let prev = NSButton()
     private let next = NSButton()
@@ -687,6 +689,11 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         }
         if let cost = entry.cost, cost > 0, let unit = entry.costCurrency {
             lines.append("花费 " + displayConsumption(cost, unit: unit))
+        }
+        if let resets = entry.windowResets {
+            for (window, count) in resets.sorted(by: { $0.key < $1.key }) where count > 0 {
+                lines.append(window + "重置 " + String(count) + " 次")
+            }
         }
         return lines.isEmpty && entry.hasQuotaSpend ? ["已使用"] : lines
     }

@@ -286,6 +286,8 @@ struct UsageHistoryEntry: Codable, Equatable, Identifiable {
     var balanceUnit: String?
     var referenceWindow: String?
     var windowEnds: [String: Double]?
+    /// 每个额度窗口真正发生过的重置次数；用于解释 Codex 5 小时窗口为何能一天多轮。
+    var windowResets: [String: Int]?
 
     var recordedDailyTotals: [String: Double] {
         if let dailyTotals, !dailyTotals.isEmpty { return dailyTotals }

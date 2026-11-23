@@ -154,6 +154,10 @@ check(UsageLevel.forDay([mixedUsage, knownZero]) == .spent && UsageLevel.forDay(
 mixedUsage.dailyTotals = ["个百分点":6, "周期：本周":6]
 mixedUsage.referenceWindow = "本周"
 check(mixedUsage.consumptionPercent == 6 && HistoryWindowController.consumptionLines(mixedUsage) == ["本周 6%"], "November 18: weekly six survives an unscoped six without adding the two")
+var resetUsage = UsageHistoryEntry(date: "2026-11-23", provider: "codex")
+resetUsage.dailyTotals = ["周期：本周": 3]
+resetUsage.windowResets = ["5 小时": 2]
+check(HistoryWindowController.consumptionLines(resetUsage) == ["本周 3%", "5 小时重置 2 次"], "Codex resets are visible in history details")
 check(UsageHistoryEntry.averageConsumption([mixedUsage, knownZero, missingBase]) == 3 && UsageLevel.forDay([mixedUsage, knownZero, missingBase]) == .light, "six and a comparable zero average to three even with an unconvertible wallet")
 var oldTagged = mixedUsage
 oldTagged.dailyTotals = nil
@@ -324,7 +328,7 @@ let firstWeekday = Calendar.current.component(.weekday, from:historyDateFormat.d
 let weekday = weekdayStrip.arrangedSubviews[(firstWeekday + 5) % 7]
 check(firstDate.bounds.width >= 40 && abs(firstDate.convert(firstDate.bounds,to:historyRoot).midX - weekday.convert(weekday.bounds,to:historyRoot).midX) < 1,"calendar dates have usable width and align with weekdays")
 let historyMenu = historyRoot.menu!
-check(!views(historyRoot).contains { $0 is NSPopUpButton } && historyMenu.item(withTitle:"Trae") == nil && historyMenu.item(withTitle:"整体历史")?.state == .on, "history defaults to overall without a filter button or hidden services")
+check(!views(historyRoot).contains { $0 is NSPopUpButton } && historyMenu.item(withTitle:"Trae") != nil && historyMenu.item(withTitle:"整体历史")?.state == .on, "history keeps hidden services available in its menu")
 if let item = historyMenu.item(withTitle:"Codex") {
     NSApp.sendAction(item.action!,to:item.target,from:item)
     check(labels(historyRoot).contains("Codex 用量历史"), "history context menu switches service and shows scope")
