@@ -807,6 +807,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
                         self.showStatus("配置保存失败", color: Theme.danger)
                         return
                     }
+                    if self.providerID == "doubao", changed["cookie"] != nil {
+                        // 换号后旧账号的 inactive/失败结果不能继续算今天已完成。
+                        config.set("checkin.results.doubao", "")
+                        config.set("checkin.lastDate", "")
+                        config.set("checkin.lastSummary", "")
+                        config.set("checkin.resultDate", "")
+                        try? config.save()
+                    }
                     let value = status.primaryMetric.map(status.valueText) ?? status.detail ?? "已连接"
                     self.showStatus("✓ 已连接 · \(value)", color: status.status == "warn" ? Theme.warning : Theme.success)
                     self.onSaved()

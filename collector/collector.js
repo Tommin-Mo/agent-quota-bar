@@ -665,7 +665,12 @@ function codexWindows(rateLimit, additionalRateLimits = null, codeReviewRateLimi
       ['monthly_window', ''],
       ['individual_window', ''],
     ];
-    for (const [key, suffix] of windows) addWindow(suffix ? `${prefix}${suffix}` : prefix, rateLimit[key], rateLimit.allowed === false ? '已达上限' : '');
+    for (const [key, suffix] of windows) {
+      const window = rateLimit[key];
+      const used = window && num(window.used_percent);
+      // account-level allowed=false 不能盖到每个窗口：5 小时窗口可能还剩余 100%。
+      addWindow(suffix ? `${prefix}${suffix}` : prefix, window, used !== undefined && used >= 99.5 ? '已达上限' : '');
+    }
   }
 
   addRateLimit(rateLimit);
@@ -729,7 +734,9 @@ function collectCodex(cfg = {}) {
 
   const credits = j.credits || {};
   const balance = num(credits.balance);
-  if (balance !== undefined && (credits.has_credits || balance > 0 || credits.unlimited)) {
+  // 0 也要显示：Codex Plus 的第三块通常是 credits（积分余额），
+  // 隐藏 0 会让用户误以为我们只保留了周窗口。
+  if (balance !== undefined) {
     metrics.push(
       textMetric('积分余额', credits.unlimited ? '无限' : String(round(balance, 0)),
         credits.unlimited ? 'unlimited credits' : '')
@@ -1955,7 +1962,7 @@ function writeCheckinConfig(results) {
           : r.provider;
         if (r.status === 'ok') return `${name} +${r.points ?? 100}`;
         if (r.status === 'already') return `${name} 已签`;
-        if (r.status === 'inactive') return `${name} 未开放`;
+        if (r.status === 'inactive') return `${name} 无签到`;
         return `${name} 失败`;
       }).join(' · ');
       const workbuddy = results.find((r) => r.provider === 'workbuddy');
@@ -1964,6 +1971,10 @@ function writeCheckinConfig(results) {
       checkin.results = Object.fromEntries(results.map(r => [r.provider, r.status]));
       if (results.length && !failed) checkin.lastDate = localDateKey();
       checkin.lastSummary = summary || '今日已签到';
+      checkin.lastDetail = results.map((r) => {
+        const name = r.provider === 'trae' ? 'Trae' : (r.provider === 'workbuddy' ? 'WorkBuddy' : (r.provider === 'doubao' ? '豆包' : r.provider));
+        return name + '：' + (r.message || r.status);
+      }).join(' · ');
       if (workbuddy && workbuddy.streak != null) checkin.workbuddyStreak = workbuddy.streak;
       raw.checkin = checkin;
       // 只改 checkin 字段并原子覆盖，保留用户其它配置项与文件权限。
@@ -2175,17 +2186,11 @@ function collectDoubao(cfg = {}) {
           : '每日签到状态未知');
       return provider('doubao', '豆包', 'ok',
         [creditMetric('可用额度', quota.available, '', quota.detail)],
-        { balance: quota.available, detail: quota.detail, sampledAt: new Date().toISOString() });
+        { balance: quota.available, detail: quota.detail, plan: work ? '工作账号' : '个人账号', sampledAt: new Date().toISOString() });
     }
-    if (status) {
-      const detail = status.checkedIn
-        ? '今日已签 · 连续 ' + status.continuousDays + ' 天'
-        : '今日待签 · 连续 ' + status.continuousDays + ' 天';
-      return provider('doubao', '豆包', 'ok',
-        [creditMetric('累计额度', status.totalAmount, '', detail)],
-        { detail, sampledAt: new Date().toISOString(), checkin: status });
-    }
-    return failed('doubao', '豆包', '豆包额度接口暂时不可用');
+    // 额度接口失败时不能把活动页的「累计获得」冒充「可用额度」。
+    // 交给 QuotaService 保留上一次可用额度并标缓存；首帧没有缓存则明确报错。
+    return failed('doubao', '豆包', '豆包可用额度接口暂时不可用');
   }
   const bundled = path.resolve(__dirname, '../MacOS/AgentQuotaBar');
   const reader = fs.existsSync(bundled) ? bundled :

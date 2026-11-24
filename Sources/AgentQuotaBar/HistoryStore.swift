@@ -51,6 +51,22 @@ final class HistoryStore {
             guard let date = FlexibleDateParser.date(from: stamp), Self.dayKey(date) == today,
                   entry.updatedAt.flatMap(FlexibleDateParser.date(from:)).map({ $0 < date }) ?? true else { continue }
             let hadSnapshot = entry.updatedAt != nil
+            // 跨天第一帧不能从空基线开始，否则 00:00 到第一次刷新之间的
+            // 消耗会被永久吞掉（Codex 最典型：前一天 99%，第二天首帧 0% 记成未使用）。
+            if !hadSnapshot,
+               let previous = entries
+                .filter({ $0.provider == provider.id && $0.date < today })
+                .max(by: { $0.date < $1.date }) {
+                entry.windows = previous.windows
+                entry.windowEnds = previous.windowEnds
+                entry.balance = previous.balance
+                entry.consumed = previous.consumed
+                entry.walletSamples = previous.walletSamples
+                entry.referenceWindow = previous.referenceWindow
+                entry.balanceUnit = previous.balanceUnit
+                entry.openingBalances = previous.openingBalances
+                if entry.identity == nil { entry.identity = previous.identity }
+            }
             let sameAccount = entry.identity == provider.identity
             if !hadSnapshot && entry.openingBalances == nil && entry.dailyTotals == nil && entry.dailyDelta == nil { entry.openingBalances = [:] }
             let priorWallet = entry.walletSamples?[provider.identity]

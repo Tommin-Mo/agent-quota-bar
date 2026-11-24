@@ -570,7 +570,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settingsController?.updateProviderStatuses(service.snapshot)
         NotificationCenter.default.post(name: .quotaUpdated, object: service.snapshot)
-        if let snapshot = service.snapshot {
+        if let snapshot = visibleSnapshot {
+            // 隐藏/停用的服务不在面板出现，也不应该继续发低额度横幅。
             NotificationService.shared.check(snapshot: snapshot, config: service.config)
         }
         refreshCheckinUI()
@@ -979,7 +980,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.target = self
         menu.addItem(settings)
 
-        let quit = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
+        // 临时菜单里的裸 q 太容易误触；退出只保留明确点击。
+        let quit = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "")
         quit.target = self
         menu.addItem(quit)
 
@@ -993,19 +995,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mode = service.config.string("menuBarMode", default: "auto")
         let current = service.config.string("menuBarProvider", default: "auto")
 
-        let auto = NSMenuItem(title: "自动（最近使用）", action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
+        let auto = NSMenuItem(title: "最近使用", action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
         auto.target = self
         auto.representedObject = "auto"
         auto.state = mode == "auto" ? .on : .off
         menu.addItem(auto)
-        let merged = NSMenuItem(title: "显示最紧张服务", action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
+        let merged = NSMenuItem(title: "额度优先", action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
         merged.target = self
         merged.representedObject = "merged"
         merged.state = mode == "merged" ? .on : .off
         menu.addItem(merged)
         menu.addItem(.separator())
 
-        for descriptor in ProviderRegistry.all where !service.config.stringArray("hiddenProviders").contains(descriptor.id) {
+        for descriptor in ProviderRegistry.all where
+            !service.config.stringArray("hiddenProviders").contains(descriptor.id)
+            && service.config.bool("providers.\(descriptor.id).enabled", default: true) {
             let id = descriptor.id
             let item = NSMenuItem(title: descriptor.shortName, action: #selector(chooseMenuBarProvider(_:)), keyEquivalent: "")
             item.target = self

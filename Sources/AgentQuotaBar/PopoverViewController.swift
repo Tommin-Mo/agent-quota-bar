@@ -565,13 +565,17 @@ final class QuotaPopoverViewController: NSViewController {
         provider.category
     }
 
-    private func openServiceStatus(_ providerID: String) {
-        let URLs = [
+    static func serviceStatusURL(_ providerID: String) -> URL? {
+        let urls = [
             "codex": "https://status.openai.com",
             "opencode": "https://status.opencode.ai",
             "deepseek": "https://status.deepseek.com",
         ]
-        if let raw = URLs[providerID], let url = URL(string: raw) {
+        return urls[providerID].flatMap(URL.init(string:))
+    }
+
+    private func openServiceStatus(_ providerID: String) {
+        if let url = Self.serviceStatusURL(providerID) {
             NSWorkspace.shared.open(url)
         }
     }
@@ -938,25 +942,33 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
                 failed.toolTip = "签到请求已执行，但服务端没有返回成功；可在设置 → 运行与签到查看原因"
                 failed.setAccessibilityLabel("签到失败")
                 nameRow.addArrangedSubview(failed)
-            } else if CheckinService.result(for: provider.id, in: ConfigStore()) == "未开放" {
+            } else if CheckinService.result(for: provider.id, in: ConfigStore()) == "无签到" {
                 let inactive = label("无签到", size: 10, color: Theme.tertiary)
-                inactive.toolTip = "这个豆包账号没有每日签到活动"
+                inactive.toolTip = "工作/企业账号没有每日签到；个人账号才有"
                 inactive.setAccessibilityLabel("无每日签到")
                 nameRow.addArrangedSubview(inactive)
             }
         }
         if let serviceStatus = provider.serviceStatus, serviceStatus != "ok" {
-            let statusButton = NSButton(
-                title: serviceStatus == "outage" ? "服务故障" : "服务降级",
-                target: self,
-                action: #selector(statusTapped)
-            )
-            statusButton.isBordered = false
-            statusButton.font = .systemFont(ofSize: 10, weight: .medium)
-            statusButton.contentTintColor = serviceStatus == "outage" ? Theme.danger : Theme.warning
-            statusButton.toolTip = provider.serviceStatusDescription
-            statusButton.setAccessibilityLabel("查看 \(style.shortName) 服务状态")
-            nameRow.addArrangedSubview(statusButton)
+            let title = serviceStatus == "outage" ? "官方故障" : "官方降级"
+            if QuotaPopoverViewController.serviceStatusURL(provider.id) != nil {
+                let statusButton = NSButton(
+                    title: title + " ↗",
+                    target: self,
+                    action: #selector(statusTapped)
+                )
+                statusButton.isBordered = false
+                statusButton.font = .systemFont(ofSize: 10, weight: .medium)
+                statusButton.contentTintColor = serviceStatus == "outage" ? Theme.danger : Theme.warning
+                statusButton.toolTip = provider.serviceStatusDescription
+                statusButton.setAccessibilityLabel("查看 \(style.shortName) 官方服务状态")
+                nameRow.addArrangedSubview(statusButton)
+            } else {
+                let status = label(title, size: 10, weight: .medium,
+                                   color: serviceStatus == "outage" ? Theme.danger : Theme.warning)
+                status.toolTip = provider.serviceStatusDescription
+                nameRow.addArrangedSubview(status)
+            }
         }
         if provider.status == "warn" && isExhausted(provider) {
             nameRow.addArrangedSubview(label("已用尽", size: 10, weight: .medium, color: Theme.danger))
@@ -1100,6 +1112,21 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
             period.edgeInsets = NSEdgeInsets(top: 0, left: ledger ? 0 : 33, bottom: 3, right: rightInset)
             detail.addArrangedSubview(period)
             bar.heightAnchor.constraint(equalToConstant: 4).isActive = true
+        }
+
+        if canExpand {
+            for metric in provider.metrics where metric.kind == "text" {
+                let line = NSStackView(views: [
+                    label(metric.label, size: 12, weight: .semibold),
+                    NSView(),
+                    label(provider.valueText(metric) + (metric.detail.flatMap { $0.isEmpty ? nil : " · " + $0 } ?? ""), size: 12, color: Theme.secondary)
+                ])
+                line.orientation = .horizontal
+                line.alignment = .firstBaseline
+                line.spacing = 6
+                line.edgeInsets = NSEdgeInsets(top: 0, left: ledger ? 0 : 33, bottom: 3, right: rightInset)
+                detail.addArrangedSubview(line)
+            }
         }
 
         if canExpand, !["deepseek", "trae", "workbuddy"].contains(provider.id),

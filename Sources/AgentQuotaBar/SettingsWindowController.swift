@@ -563,13 +563,6 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func buildSaveBar(in bar: NSView) {
-        let openConfig = NSButton(title: "打开配置文件…", target: self, action: #selector(openConfig))
-        openConfig.toolTip = "在默认编辑器中打开 config.json；会直接修改配置"
-        openConfig.isBordered = false
-        openConfig.font = .systemFont(ofSize: 12)
-        openConfig.heightAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true
-        openConfig.contentTintColor = Theme.accent
-
         hintLabel.font = .systemFont(ofSize: 12)
         hintLabel.textColor = Theme.secondary
         hintLabel.setAccessibilityLabel("保存状态")
@@ -579,7 +572,7 @@ final class SettingsWindowController: NSWindowController {
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        let row = NSStackView(views: [hintLabel, spacer, openConfig])
+        let row = NSStackView(views: [hintLabel, spacer])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 12
@@ -797,7 +790,8 @@ final class SettingsWindowController: NSWindowController {
         checkinTitleLabel.textColor = Theme.text
         checkinStatusLabel.font = .systemFont(ofSize: 12)
         checkinStatusLabel.textColor = Theme.secondary
-        checkinStatusLabel.lineBreakMode = .byTruncatingTail
+        checkinStatusLabel.lineBreakMode = .byWordWrapping
+        checkinStatusLabel.maximumNumberOfLines = 2
 
         let icon = NSImageView(image: NSImage(systemSymbolName: "checkmark.seal.fill", accessibilityDescription: "签到") ?? NSImage())
         icon.contentTintColor = Theme.accent
@@ -847,6 +841,8 @@ final class SettingsWindowController: NSWindowController {
             checkinProviderRow("trae", subtitle: "每日 +100 积分"),
             separator(),
             checkinProviderRow("workbuddy", subtitle: streak > 0 ? "连续 \(streak) 天 · 每日 +100" : "连续签到有额外奖励"),
+            separator(),
+            checkinProviderRow("doubao", subtitle: "个人账号每日签到；工作/企业账号无签到"),
         ])
 
         return composePage([
@@ -968,7 +964,7 @@ final class SettingsWindowController: NSWindowController {
         fixedChoiceRow = fixed
         fixed.isHidden = modePicker.selectedSegment != 1
         let mode = settingSection("菜单栏图标", symbol: "menubar.rectangle", rows: [
-            controlRow("显示方式", modePicker, caption: nil), fixed, separator(),
+            controlRow("显示方式", modePicker, caption: "自动跟随最近使用；固定始终显示指定服务；额度优先显示当前最紧张的服务。"), fixed, separator(),
             controlRow("图标大小", scaleRow, caption: nil)
         ])
         orderSelector.setAccessibilityLabel("调整服务顺序")
@@ -983,7 +979,7 @@ final class SettingsWindowController: NSWindowController {
         reloadOrder()
         let moves = NSStackView(views: [orderSelector, earlier, later])
         let order = settingSection("服务顺序", symbol: "arrow.up.arrow.down", rows: [
-            controlRow("额度页排序", moves, caption: nil), separator(), controlRow("默认顺序", resetOrder, caption: nil)
+            controlRow("额度页排序", moves, caption: "也可在额度面板上下拖动服务行调整。"), separator(), controlRow("默认顺序", resetOrder, caption: nil)
         ])
         windowRows.orientation = .vertical
         windowRows.alignment = .leading
@@ -1192,7 +1188,7 @@ final class SettingsWindowController: NSWindowController {
         alignServiceHeading()
         return [table, composePage([
             settingSection("浏览器授权", symbol: "lock", rows: [insetText(privacy)] + browserFallbackRows),
-            settingSection("本机配置文件", symbol: "doc", rows: [insetText(local)])
+            settingSection("本机配置文件", symbol: "doc", rows: [localConfigRow(local)])
         ])]
     }
 
@@ -1261,6 +1257,24 @@ final class SettingsWindowController: NSWindowController {
         DispatchQueue.main.async { [weak self] in self?.updateServiceScrollHeight() }
     }
 
+    private func localConfigRow(_ path: NSTextField) -> NSView {
+        let open = NSButton(title: "在访达中显示", target: self, action: #selector(revealConfig))
+        open.bezelStyle = .rounded
+        open.font = .systemFont(ofSize: 11)
+        open.setAccessibilityLabel("在访达中显示配置文件")
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let row = NSStackView(views: [path, spacer, open])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        return row
+    }
+
+    @objc private func revealConfig() {
+        NSWorkspace.shared.activateFileViewerSelecting([service.config.url])
+    }
+
     private func makeAlertsPage() -> [NSView] {
         colorWells = []
         for (index, color) in [QuotaStyle.healthyColor, QuotaStyle.warningColor, QuotaStyle.dangerColor].enumerated() {
@@ -1274,6 +1288,12 @@ final class SettingsWindowController: NSWindowController {
             well.translatesAutoresizingMaskIntoConstraints = false
             well.widthAnchor.constraint(equalToConstant: 44).isActive = true
             well.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            well.wantsLayer = true
+            well.layer?.cornerRadius = 6
+            well.layer?.borderWidth = 1
+            well.layer?.borderColor = NSColor.separatorColor.cgColor
+            well.toolTip = "点按更换" + ["充足", "警戒", "危险"][index] + "颜色"
+            well.setAccessibilityHelp("点按更换颜色")
             colorWells.append(well)
         }
 
@@ -1312,19 +1332,20 @@ final class SettingsWindowController: NSWindowController {
             colorRow.addArrangedSubview(colorWells[index])
             if index < 2 { colorRow.setCustomSpacing(16, after: colorWells[index]) }
         }
-        resetColors.title = "跟随主题"
+        resetColors.title = "恢复主题颜色"
         resetColors.target = self
         resetColors.action = #selector(restoreThemeColors)
         resetColors.setAccessibilityLabel("恢复主题额度颜色")
         resetColors.bezelStyle = .rounded
-        colorRow.addArrangedSubview(resetColors)
         refreshColorWells()
         let colorGroup = settingSection("颜色与分级", symbol: "paintpalette", rows: [
-            controlRow("颜色", colorRow, caption: nil),
+            controlRow("颜色", colorRow, caption: "点按色块更换颜色；恢复后跟随主题。"),
             separator(),
             controlRow("警戒阈值（%）", warningControl, caption: "剩余达到或低于此值时进入警戒。可设 2–99%。"),
             separator(),
             controlRow("危险阈值（%）", dangerControl, caption: "剩余达到或低于此值时显示危险色。须低于警戒值。"),
+            separator(),
+            controlRow("颜色来源", resetColors, caption: nil),
         ])
 
         notifySwitch.isOn = service.config.bool("notifications.enabled", default: false)
@@ -1387,7 +1408,7 @@ final class SettingsWindowController: NSWindowController {
             controlRow("通知权限", permissionRow, caption: "共享屏幕或开启专注模式时，横幅可能只送达通知中心。")
         ])
         let notifyRows: [NSView] = [
-            controlRow("百分比提醒线（%）", notifyPercentField, caption: nil),
+            controlRow("提醒阈值（剩余 ≤ %）", notifyPercentField, caption: "与「额度颜色」的警戒/危险阈值独立；默认 20%。"),
             separator(),
             controlRow("Trae 积分", thresholdField("trae", fallback: 200), caption: nil),
             separator(),
@@ -2033,7 +2054,9 @@ final class SettingsWindowController: NSWindowController {
             }
             if provider.cached == true {
                 views.text.stringValue = provider.displaySubtitle
-                views.dot.surfaceColor = Theme.warning
+                // 灰色只表示“上次读取”，橙色留给需要处理的状态。
+                views.text.textColor = Theme.secondary
+                views.dot.surfaceColor = Theme.tertiary
                 continue
             }
             switch provider.status {
@@ -2101,17 +2124,25 @@ final class SettingsWindowController: NSWindowController {
     }
 
     func updateCheckinStatus() {
-        checkinTitleLabel.stringValue = checkin.hasCheckedInToday ? "今日已签到" : "今日待签到"
+        checkinTitleLabel.stringValue = checkin.hasCheckedInToday ? "今日签到已完成" : "今日待签到"
         checkinStatusLabel.stringValue = "\(checkin.statusText) · \(checkin.detailText)"
-        checkinStatusLabel.textColor = checkin.hasCheckedInToday ? Theme.success : Theme.secondary
+        checkinStatusLabel.toolTip = service.config.string("checkin.lastDetail")
+        let hasFailure = service.config.string("checkin.lastSummary").contains("失败")
+        checkinStatusLabel.textColor = hasFailure ? Theme.warning : Theme.secondary
         checkinSwitch.isOn = checkin.isAutoEnabled
         checkinHourPopup.isEnabled = checkinSwitch.isOn
         checkinButton.title = checkin.isRunning ? "签到中…" : "立即签到"
         checkinButton.isEnabled = !checkin.isRunning
         checkinButton.isHidden = checkin.hasCheckedInToday
         for (id, label) in checkinDetailStatusLabels {
-            label.stringValue = CheckinService.result(for: id, in: service.config)
-            label.textColor = label.stringValue == "已签到" ? Theme.success : Theme.secondary
+            let result = CheckinService.result(for: id, in: service.config)
+            label.stringValue = result
+            switch result {
+            case "已签到": label.textColor = Theme.success
+            case "签到失败": label.textColor = Theme.danger
+            case "无签到": label.textColor = Theme.tertiary
+            default: label.textColor = Theme.secondary
+            }
         }
     }
 

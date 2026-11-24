@@ -24,6 +24,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     private var selectedDay = ""
     private var overallLocation: (month: Int, day: String)?
     private let backButton = NSButton()
+    private let scopeButton = NSButton()
     private var dayButtons: [HistoryDayCell] = []
     private let legendRow = NSStackView()
     private var providerID: String
@@ -111,7 +112,18 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         backButton.target = self
         backButton.action = #selector(returnToOverall)
         backButton.setAccessibilityLabel("返回整体历史")
-        let scope = row([mark, heading], spacing: 10)
+        scopeButton.title = "整体历史"
+        scopeButton.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
+        scopeButton.imagePosition = .imageTrailing
+        scopeButton.isBordered = false
+        scopeButton.font = .systemFont(ofSize: 12, weight: .medium)
+        scopeButton.contentTintColor = .white
+        scopeButton.target = self
+        scopeButton.action = #selector(showScopeMenu)
+        scopeButton.setAccessibilityLabel("选择历史服务")
+        scopeButton.toolTip = "选择整体历史或单个服务"
+        scopeButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 24).isActive = true
+        let scope = row([mark, heading, scopeButton], spacing: 10)
         let stats = row([stat("本月使用", activeCount), stat("连续使用", streakCount)], spacing: 24)
         let top = row([scope, NSView(), stats], spacing: 16)
         embed(top, in: masthead, inset: 19, centered: true)
@@ -245,6 +257,8 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
             mark.isHidden = !original
             self.heading.textColor = original ? .white : Theme.text
             self.heading.font = Theme.headingFont(size: design == .claude ? 31 : 23, weight: .semibold)
+            // masthead 在玻璃/Claude 主题下是浅色透明底，白色 scope 文案会消失。
+            self.scopeButton.contentTintColor = original ? .white : Theme.accent
             self.monthLabel.font = Theme.headingFont(size: design == .claude ? 23 : 28, weight: .bold)
             self.selectedDate.font = Theme.headingFont(size: design == .claude ? 30 : 26, weight: .bold)
             for number in [self.activeCount, self.streakCount] { number.textColor = original ? .white : Theme.text }
@@ -345,6 +359,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
             let item = row([swatch(level, size: 10), label(level.title, size: 11, color: Theme.secondary)], spacing: 4)
             legendRow.addArrangedSubview(item)
         }
+        legendRow.addArrangedSubview(row([swatch(.spent, size: 10), label("已使用", size: 11, color: Theme.secondary)], spacing: 4))
         let info = NSButton(image: NSImage(systemSymbolName: "info.circle", accessibilityDescription: nil)!, target: self, action: #selector(explainRating(_:)))
         info.isBordered = false
         info.contentTintColor = Theme.accent
@@ -408,6 +423,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         }
         backButton.isHidden = providerID == "all"
         heading.stringValue = providerID == "all" ? "用量历史" : ProviderStyles.style(for: providerID).shortName + " 用量历史"
+        scopeButton.title = providerID == "all" ? "整体历史" : ProviderStyles.style(for: providerID).shortName
         if mainScopeItem.menu != nil { mainScopeItem.submenu = scopeMenu.copy() as? NSMenu }
     }
 
@@ -424,6 +440,10 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidResignKey(_ notification: Notification) {
         mainScopeItem.menu?.removeItem(mainScopeItem)
+    }
+
+    @objc private func showScopeMenu() {
+        scopeMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: scopeButton.bounds.height + 4), in: scopeButton)
     }
 
     @objc private func providerChanged(_ sender: NSMenuItem) {

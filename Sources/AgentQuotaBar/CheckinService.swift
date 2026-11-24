@@ -40,7 +40,7 @@ final class CheckinService {
         guard config.string("checkin.resultDate") == todayKey else { return "待签到" }
         switch config.string("checkin.results.\(id)") {
         case "ok", "already": return "已签到"
-        case "inactive": return "未开放"
+        case "inactive": return "无签到"
         case "failed": return "签到失败"
         default: return "待签到"
         }
@@ -72,7 +72,10 @@ final class CheckinService {
 
     var detailText: String {
         guard isAutoEnabled else { return "自动签到已关闭" }
-        if hasCheckedInToday { return "明天自动继续" }
+        if hasCheckedInToday {
+            let doubaoInactive = config.string("checkin.results.doubao") == "inactive"
+            return doubaoInactive ? "个人账号才有签到" : "明天自动继续"
+        }
         return "每日 \(String(format: "%02d:00", scheduledHour)) 自动签到"
     }
 
@@ -116,7 +119,7 @@ final class CheckinService {
                     case "already":
                         return "\(name) 已签"
                     case "inactive":
-                        return "\(name) 未开放"
+                        return "\(name) 无签到"
                     default:
                         return "\(name) 失败"
                     }
@@ -132,6 +135,11 @@ final class CheckinService {
                     self.config.set("checkin.workbuddyStreak", streak)
                 }
                 let results = Dictionary(report.results.map { ($0.provider, $0.status) }, uniquingKeysWith: { _, new in new })
+                let detail = report.results.map { item in
+                    let name = item.provider == "trae" ? "Trae" : (item.provider == "workbuddy" ? "WorkBuddy" : "豆包")
+                    return name + "：" + item.message
+                }.joined(separator: " · ")
+                self.config.set("checkin.lastDetail", detail)
                 self.config.set("checkin.results", results)
                 self.config.set("checkin.resultDate", Self.todayKey)
                 let incomplete = report.results.isEmpty || report.results.contains { !["ok", "already", "inactive"].contains($0.status) }
@@ -156,6 +164,7 @@ final class CheckinService {
                     .map(String.init) ?? "未知错误"
                 let message = String(firstLine.prefix(160))
                 self.config.set("checkin.lastSummary", "签到失败：\(message)")
+                self.config.set("checkin.lastDetail", "签到失败：" + message)
                 try? self.config.save()
                 self.onUpdate?()
                 completion?(CheckinReport(results: []))
