@@ -61,6 +61,7 @@ final class QuotaPopoverViewController: NSViewController {
     private var panelVisible = false
     private let headerHint = HeaderHint()
     private var draggingRow: ProviderRowView?
+    private var lastRowOrderSignature = ""
 
     // MARK: - 可选数据钩子（优先用注入值；缺省时读 CostStore/HistoryStore）
     /// 成本汇总行，例如 "今日 $0.42 · 近 7 天 $2.10"；返回 nil/空串则隐藏。
@@ -410,14 +411,9 @@ final class QuotaPopoverViewController: NSViewController {
         // 两个都签完就自动隐藏；运行中保留但禁用，避免重复点击。
         checkinButton.isHidden = done
         checkinButton.isEnabled = !running
-        if let snapshot = lastSnapshot {
-            update(
-                snapshot: snapshot,
-                error: lastError,
-                isRefreshing: lastRefreshing,
-                isOffline: lastOffline
-            )
-        }
+        // Do not rebuild every provider row here: AppDelegate calls this right
+        // after update(), and a second synchronous rebuild would cancel the
+        // value/expand transitions before the first frame can paint.
     }
 
     @objc private func checkinTapped() {
@@ -429,6 +425,7 @@ final class QuotaPopoverViewController: NSViewController {
     }
 
     func update(snapshot: QuotaSnapshot?, error: String?, isRefreshing: Bool, isOffline: Bool = false) {
+        let previousSnapshot = lastSnapshot
         let snapshot = snapshot ?? (isRefreshing && !isOffline ? lastSnapshot : nil)
         lastSnapshot = snapshot
         lastError = error
@@ -482,6 +479,9 @@ final class QuotaPopoverViewController: NSViewController {
             rowsStack.addArrangedSubview(NSButton(title: "选择显示的服务…", target: self, action: #selector(selectServices)))
             empty.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true
         }
+        let rowSignature = ordered.map(\.id).joined(separator: "|")
+        let structureChanged = !lastRowOrderSignature.isEmpty && lastRowOrderSignature != rowSignature
+        lastRowOrderSignature = rowSignature
         for (index, provider) in ordered.enumerated() {
             let row = ProviderRowView(
                 provider: provider,
@@ -511,7 +511,10 @@ final class QuotaPopoverViewController: NSViewController {
                 },
                 onStatus: { [weak self] in
                     self?.openServiceStatus(provider.id)
-                }
+                },
+                animateValue: previousSnapshot?.provider(withID: provider.id).map {
+                    snapshot.signature(for: $0) != snapshot.signature(for: provider)
+                } ?? false
             )
             row.showsSeparator = Theme.design != .glass && index < ordered.count - 1
             row.translatesAutoresizingMaskIntoConstraints = false
@@ -522,6 +525,9 @@ final class QuotaPopoverViewController: NSViewController {
             row.addGestureRecognizer(pan)
         }
 
+        if structureChanged {
+            QuotaMotion.reveal(rowsStack, duration: QuotaMotion.standard, offset: 3)
+        }
         let headers = rowsStack.arrangedSubviews.compactMap { ($0 as? ProviderRowView)?.summaryHeader }
         if let height = headers.map({ ceil($0.fittingSize.height) }).max() {
             for header in headers {
@@ -613,9 +619,13 @@ final class QuotaPopoverViewController: NSViewController {
     }
 
     @objc private func changePage(_ sender: NSButton) {
+        let old = pageIndex
         pageAnchor = nil
         pageIndex += sender === nextPage ? 1 : -1
         updatePreferredSize()
+        if pageIndex != old {
+            QuotaMotion.settle(rowsStack)
+        }
     }
 
     private func updatePreferredSize() {
@@ -734,10 +744,9 @@ final class QuotaPopoverViewController: NSViewController {
         guard let current = rowsStack.arrangedSubviews.firstIndex(of: row), target != current else { return }
         rowsStack.removeArrangedSubview(row)
         rowsStack.insertArrangedSubview(row, at: min(target, rowsStack.arrangedSubviews.count))
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
-            rowsStack.layoutSubtreeIfNeeded()
-        }
+        // Drag reorder is a direct manipulation: follow the pointer immediately,
+        // do not put a layout animation between the hand and the row.
+        rowsStack.layoutSubtreeIfNeeded()
     }
 
     func setPanelVisible(_ visible: Bool) {
@@ -856,6 +865,9 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
     private let onConfigure: () -> Void
     private let onCheckin: () -> Void
     private let onStatus: (() -> Void)?
+    private let animateValue: Bool
+    private weak var primaryValueLabel: NSTextField?
+    private var pendingValueSettle = false
     private var hovered = false
     private var dragging = false
     private let separator = NSView()
@@ -876,7 +888,8 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
         costText: String? = nil,
         onConfigure: @escaping () -> Void,
         onCheckin: @escaping () -> Void,
-        onStatus: (() -> Void)? = nil
+        onStatus: (() -> Void)? = nil,
+        animateValue: Bool = false
     ) {
         self.onToggle = onToggle
         self.providerID = provider.id
@@ -888,6 +901,7 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
         self.onConfigure = onConfigure
         self.onCheckin = onCheckin
         self.onStatus = onStatus
+        self.animateValue = animateValue
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
@@ -987,6 +1001,8 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
         value.alignment = .right
         value.identifier = NSUserInterfaceItemIdentifier("primary-quota")
         if ledger { value.font = NSFont(name: "Georgia", size: 26) ?? value.font }
+        primaryValueLabel = value
+        pendingValueSettle = animateValue
 
         let valueRow = NSStackView()
         valueRow.orientation = .horizontal
@@ -1217,6 +1233,16 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
         return parts
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard pendingValueSettle, window != nil, let value = primaryValueLabel else { return }
+        pendingValueSettle = false
+        DispatchQueue.main.async { [weak self, weak value] in
+            guard let self, self.window != nil, let value, value.superview != nil else { return }
+            QuotaMotion.settle(value, duration: QuotaMotion.feedback)
+        }
+    }
+
     func setExpanded(_ expanded: Bool, animated: Bool) {
         guard expanded != isExpanded, provider.hasExpandableWindows else { return }
         isExpanded = expanded
@@ -1225,12 +1251,17 @@ final class ProviderRowView: NSView, NSGestureRecognizerDelegate {
         collapsedWarning?.isHidden = expanded
         toggleButton.setAccessibilityExpanded(expanded)
         if expanded {
+            detail.alphaValue = 1
             stack.insertArrangedSubview(detail, at: 1)
             detail.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-            if animated { QuotaMotion.reveal(detail, duration: 0.14, offset: 3) }
+            if animated { QuotaMotion.reveal(detail, duration: QuotaMotion.standard, offset: 3) }
         } else {
+            // Collapse is an exit: remove immediately so the next layout is
+            // deterministic; the chevron and the disappearing detail are
+            // enough feedback, and this avoids a stale row blocking a re-tap.
             detail.layer?.removeAllAnimations()
             detail.removeFromSuperview()
+            detail.alphaValue = 1
         }
     }
 
@@ -1370,7 +1401,6 @@ final class BarView: NSView {
         self.progress = min(1, max(0, progress))
         self.color = color
         super.init(frame: .zero)
-        wantsLayer = true
         setAccessibilityElement(true)
         setAccessibilityRole(.progressIndicator)
         setAccessibilityLabel("剩余额度")

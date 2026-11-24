@@ -22,6 +22,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
     private let calendarStack = MonthGrid()
     private let detailRows = LedgerStack()
     private var selectedDay = ""
+    private var lastCalendarRevealKey = ""
     private var overallLocation: (month: Int, day: String)?
     private let backButton = NSButton()
     private let scopeButton = NSButton()
@@ -406,6 +407,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         popover.contentSize = size
         popover.appearance = sender.effectiveAppearance
         popover.behavior = .transient
+        popover.animates = false
         ratingPopover = popover
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }
@@ -570,6 +572,11 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
             showDay(initial)
         } else { detailRows.arrangedSubviews.forEach { $0.removeFromSuperview() }; selectedDate.stringValue = ""; weekdayLabel.stringValue = ""; coverageLabel.stringValue = "" }
         calendarStack.replaceDays(cells)
+        let revealKey = "\(monthOffset)|\(providerID)|\(selectedDay)"
+        if revealKey != lastCalendarRevealKey {
+            lastCalendarRevealKey = revealKey
+            QuotaMotion.reveal(calendarStack, duration: QuotaMotion.standard, offset: 0)
+        }
         if let key = focusedDay?.identifier, let button = dayButtons.first(where: { $0.identifier == key }) { window?.makeFirstResponder(button) }
     }
 
@@ -629,7 +636,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         }
         detailRows.enclosingScrollView?.contentView.scroll(to: .zero)
         for day in dayButtons { day.selectedDate = day === sender }
-        if changed { QuotaMotion.reveal(detailRows, duration: 0.1) }
+        if changed { QuotaMotion.reveal(detailRows, duration: QuotaMotion.feedback) }
     }
 
     private func separator() -> NSView {

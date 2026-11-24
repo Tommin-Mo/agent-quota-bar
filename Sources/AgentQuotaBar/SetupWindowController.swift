@@ -686,6 +686,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     @objc private func toggleManual() {
         guard let manualGroup else { return }
         manualGroup.isHidden.toggle()
+        if !manualGroup.isHidden { QuotaMotion.show(manualGroup, offset: 2) }
         manualToggle?.title = manualGroup.isHidden ? "手动填写 Token / 查看 F12 步骤" : "收起手动填写"
         resizeWindowToFit()
     }
@@ -730,8 +731,17 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         actionText?.stringValue = actionDescription()
         actionButton?.title = primaryActionTitle()
         browserButton?.isHidden = goMode
-        goGroup?.isHidden = !goMode
-        zenGroup?.isHidden = goMode
+        let wasGoHidden = goGroup?.isHidden ?? true
+        let wasZenHidden = zenGroup?.isHidden ?? true
+        if goMode {
+            goGroup?.isHidden = false
+            if wasGoHidden, let goGroup { QuotaMotion.show(goGroup, offset: 0) }
+            zenGroup?.isHidden = true
+        } else {
+            zenGroup?.isHidden = false
+            if wasZenHidden, let zenGroup { QuotaMotion.show(zenGroup, offset: 0) }
+            goGroup?.isHidden = true
+        }
         resizeWindowToFit()
     }
 

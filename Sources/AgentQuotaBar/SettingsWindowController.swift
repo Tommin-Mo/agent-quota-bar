@@ -888,7 +888,11 @@ final class SettingsWindowController: NSWindowController {
             modePicker.setWidth(0, forSegment: index)
         }
         modePicker.selectedSegment = modeValues.firstIndex(of: current) ?? 0
-        fixedChoiceRow?.isHidden = current != "fixed"
+        if let fixedChoiceRow {
+            if current == "fixed" {
+                if fixedChoiceRow.isHidden { fixedChoiceRow.isHidden = false; QuotaMotion.show(fixedChoiceRow, offset: 2) }
+            } else { fixedChoiceRow.isHidden = true }
+        }
     }
 
     private func populateFixedProviders() {
@@ -1977,9 +1981,13 @@ final class SettingsWindowController: NSWindowController {
 
     private func selectPage(_ index: Int) {
         window?.makeFirstResponder(nil)
+        let previous = pageViews.first(where: { !$0.isHidden })
         selectedPage = index
         for (i, page) in pageViews.enumerated() {
             page.isHidden = i != index
+        }
+        if let page = pageViews[safe: index], page !== previous {
+            QuotaMotion.show(page, offset: 0)
         }
         for (i, button) in navButtons.enumerated() {
             button.selected = i == index
@@ -2013,7 +2021,10 @@ final class SettingsWindowController: NSWindowController {
         let proxy = config.string("proxy", default: "auto")
         let index = ["", "auto"].contains(proxy) ? 0 : (["off", "none"].contains(proxy) ? 1 : 2)
         proxyMode.selectItem(at: index)
-        proxyField.isHidden = index != 2
+        let showProxy = index == 2
+        if showProxy {
+            if proxyField.isHidden { proxyField.isHidden = false; QuotaMotion.show(proxyField, offset: 2) }
+        } else { proxyField.isHidden = true }
         proxyField.stringValue = index == 2 ? proxy : ""
 
         populateMenuBarModePopup()
@@ -2125,7 +2136,11 @@ final class SettingsWindowController: NSWindowController {
 
     func updateCheckinStatus() {
         checkinTitleLabel.stringValue = checkin.hasCheckedInToday ? "今日签到已完成" : "今日待签到"
-        checkinStatusLabel.stringValue = "\(checkin.statusText) · \(checkin.detailText)"
+        let nextCheckinText = "\(checkin.statusText) · \(checkin.detailText)"
+        if checkinStatusLabel.stringValue != nextCheckinText {
+            checkinStatusLabel.stringValue = nextCheckinText
+            QuotaMotion.settle(checkinStatusLabel)
+        }
         checkinStatusLabel.toolTip = service.config.string("checkin.lastDetail")
         let hasFailure = service.config.string("checkin.lastSummary").contains("失败")
         checkinStatusLabel.textColor = hasFailure ? Theme.warning : Theme.secondary
@@ -2179,7 +2194,11 @@ final class SettingsWindowController: NSWindowController {
             changes["menuBarProvider"] = id
         }
         if persist(changes) {
-            fixedChoiceRow?.isHidden = mode != "fixed"
+            if let fixedChoiceRow {
+                if mode == "fixed" {
+                    if fixedChoiceRow.isHidden { fixedChoiceRow.isHidden = false; QuotaMotion.show(fixedChoiceRow, offset: 2) }
+                } else { fixedChoiceRow.isHidden = true }
+            }
             onSaved()
         }
     }
@@ -2196,7 +2215,9 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func proxyModeChanged() {
         let custom = proxyMode.indexOfSelectedItem == 2
-        proxyField.isHidden = !custom
+        if custom {
+            if proxyField.isHidden { proxyField.isHidden = false; QuotaMotion.show(proxyField, offset: 2) }
+        } else { proxyField.isHidden = true }
         proxyError.isHidden = true
         if custom {
             window?.makeFirstResponder(proxyField)
@@ -2708,7 +2729,7 @@ final class AccountManagerWindowController: NSWindowController {
         let delta = height - frame.height
         frame.size.height = height
         frame.origin.y -= delta
-        window.setFrame(frame, display: true, animate: true)
+        window.setFrame(frame, display: true, animate: !QuotaMotion.reducesMotion)
         container.setFrameSize(NSSize(width: 600, height: height))
         contentStack.layoutSubtreeIfNeeded()
     }
@@ -2912,4 +2933,10 @@ func makePaperPanel(cornerRadius: CGFloat) -> NSView {
     view.layer?.shadowRadius = 12
     view.layer?.shadowOffset = CGSize(width: 0, height: -2)
     return view
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
 }
